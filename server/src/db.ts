@@ -1,6 +1,7 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
+import fs from 'node:fs';
 
 export interface ProjectRow {
   id: string;
@@ -46,7 +47,12 @@ export interface AppendMessageInput {
   meta?: Record<string, unknown>;
 }
 
-const db = new Database(':memory:');
+// Persistent DB: WEBLISAN_DB env var, else <repo>/data/weblisan.db
+const dbPath = process.env.WEBLISAN_DB
+  ? path.resolve(process.env.WEBLISAN_DB)
+  : path.join(import.meta.dirname, '..', '..', 'data', 'weblisan.db');
+fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+const db = new Database(dbPath);
 db.pragma('journal_mode = WAL');
 
 db.exec(`

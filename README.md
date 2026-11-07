@@ -7,7 +7,7 @@ to a workspace directory).
 ## Stack
 
 - **TypeScript** everywhere
-- **Server**: Node.js + Fastify, SSE streaming, `better-sqlite3` (in-memory DB for sessions/messages)
+- **Server**: Node.js + Fastify, SSE streaming, `better-sqlite3` (persistent on-disk DB for providers, projects, sessions, messages)
 - **Client**: React + Vite, styled with Tailwind CSS v4 (assistant messages rendered as markdown)
 - **Agent**: any OpenAI-compatible chat API with tool calling (OpenAI, OpenRouter, Ollama, …)
 - **Providers**: OpenAI-compatible endpoints (name, base URL, API key) with automatic model detection; keys are stored in the (in-memory) DB
@@ -78,6 +78,7 @@ The top level of the UI is the **project**, shown as a tab in the header:
 | `OPENAI_MODEL` | `gpt-4o-mini` | Last-resort model id — used only when a project has no model **and** its provider has no detected models. Prefer leaving it unset |
 | `AGENT_WORKSPACE_DIR` | `./workspace` (relative to server cwd) | Sandbox dir for the agent's shell/file tools |
 | `PORT` | `3001` | API port |
+| `WEBLISAN_DB` | `<repo>/data/weblisan.db` | SQLite file for providers, projects, sessions & messages |
 
 After first run, providers (and their keys/URLs) live in the DB and are managed in the UI — the env values are only read once to seed the default provider.
 
@@ -98,13 +99,12 @@ Fastify ──▶ Agent loop (server/src/agent.ts)  [cwd + provider from project
         message.delta / tool.round / tool.start / tool.result /
         message.complete / error / done
 
-SQLite (in-memory): sessions + every message incl. tool calls & results,
-so switching sessions reloads full history and the LLM sees full context.
+SQLite (persistent, data/weblisan.db): providers, projects, sessions + every
+message incl. tool calls & results, so switching sessions reloads full history,
+the LLM sees full context, and nothing is lost on server restart.
 ```
 
-Note: the SQLite database is in-memory, so projects and sessions are lost when the
-server restarts. Swap `new Database(':memory:')` in `server/src/db.ts` for
-`new Database('weblisan.db')` to persist on disk.
+Delete the DB file (default `data/weblisan.db`) to reset the app to a fresh state.
 
 ## API
 
