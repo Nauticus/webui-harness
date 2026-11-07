@@ -210,6 +210,7 @@ export default function App() {
           hasActiveSession={sessions.activeSessionId !== null}
           loadError={loadError}
           onCreateProject={() => setDialog({ mode: 'create' })}
+          context={chat.context}
         />
         {chat.context && chat.context.window > 0 && (
           <ContextBar tokens={chat.context.tokens} window={chat.context.window} threshold={chat.context.threshold} />

@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Project } from '../api';
+import type { ContextUsage } from '../hooks/useChatTurn';
 import type { Item } from '../lib/items';
 import { ItemView } from './ItemView';
 import { Onboarding } from './Onboarding';
+
+const kfmt = (n: number) => `${Math.max(0, Math.round(n / 1000))}k`;
 
 export function ChatView({
   items,
@@ -13,6 +16,7 @@ export function ChatView({
   hasActiveSession,
   loadError,
   onCreateProject,
+  context,
 }: {
   items: Item[];
   busy: boolean;
@@ -21,6 +25,7 @@ export function ChatView({
   hasActiveSession: boolean;
   loadError: string | null;
   onCreateProject: () => void;
+  context?: ContextUsage | null;
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [atEnd, setAtEnd] = useState(true);
@@ -130,6 +135,15 @@ export function ChatView({
         >
           ↓ latest
         </button>
+      )}
+
+      {context && context.window > 0 && (
+        <div
+          className="pointer-events-none absolute bottom-4 right-4 select-none rounded-full border border-slate-800 bg-slate-900/90 px-2.5 py-1 text-[11px] tabular-nums text-slate-400 shadow-lg backdrop-blur"
+          title={`context: ${Math.round((context.tokens / context.window) * 100)}% used (${context.tokens.toLocaleString()} / ${context.window.toLocaleString()} tokens)`}
+        >
+          {kfmt(context.tokens)}/{kfmt(context.window)}
+        </div>
       )}
     </div>
   );
