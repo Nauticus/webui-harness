@@ -49,3 +49,21 @@ export function formatArgs(args: unknown): string {
   const s = JSON.stringify(args);
   return s && s.length > 80 ? s.slice(0, 80) + '…' : s;
 }
+
+/** One-line human target for a tool call (path / command), for the card summary. */
+export function toolTarget(name: string, args: unknown): string {
+  if (!args || typeof args !== 'object') return '';
+  const a = args as Record<string, unknown>;
+  switch (name) {
+    case 'bash':
+      return typeof a.command === 'string' ? a.command : '';
+    case 'read_file':
+    case 'write_file':
+    case 'edit_file':
+      return typeof a.path === 'string' ? a.path : '';
+    case 'list_dir':
+      return typeof a.path === 'string' && a.path ? a.path : '.';
+    default:
+      return formatArgs(args);
+  }
+}
