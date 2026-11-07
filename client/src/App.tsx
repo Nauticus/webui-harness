@@ -11,6 +11,22 @@ import { Composer } from './components/Composer';
 import { ProjectDialog, type ProjectDialogState } from './components/dialogs/ProjectDialog';
 import { ProvidersPanel } from './components/dialogs/ProvidersPanel';
 
+/** Full-width context-usage bar, sitting on the border between the chat
+ * and the composer. Amber when compaction is armed, red at the wall. */
+function ContextBar({ tokens, window, threshold }: { tokens: number; window: number; threshold: number }) {
+  const pct = Math.max(0, Math.min(100, (tokens / window) * 100));
+  const armed = pct >= threshold;
+  const tone = pct >= 100 ? 'bg-red-500' : armed ? 'bg-amber-500' : 'bg-indigo-500';
+  return (
+    <div
+      className="relative h-[3px] w-full shrink-0 bg-neutral-800/70"
+      title={`context ${pct.toFixed(0)}% used (${Math.round(tokens / 1000)}k / ${Math.round(window / 1000)}k tokens${armed ? ' — compaction armed' : ''})`}
+    >
+      <div className={`h-full transition-[width] duration-300 ${tone}`} style={{ width: `${pct}%` }} />
+    </div>
+  );
+}
+
 export default function App() {
   const projects = useProjects();
   const sessions = useSessions();
@@ -195,7 +211,9 @@ export default function App() {
           loadError={loadError}
           onCreateProject={() => setDialog({ mode: 'create' })}
         />
-
+        {chat.context && chat.context.window > 0 && (
+          <ContextBar tokens={chat.context.tokens} window={chat.context.window} threshold={chat.context.threshold} />
+        )}
         <Composer
           model={chat.modelValue}
           modelGroups={providers.composerProvider(projects.activeProject?.provider_id)?.model_groups ?? []}
