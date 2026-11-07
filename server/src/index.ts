@@ -7,7 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import * as db from './db';
 import * as history from './history';
-import { runAgentTurn, type StoredToolCall, DEFAULT_MODEL } from './agent';
+import { runAgentTurn, contextUsage, type StoredToolCall, DEFAULT_MODEL } from './agent';
 import {
   compactionThreshold,
   compactMessages,
@@ -344,9 +344,35 @@ app.get('/api/sessions/:id', async (req, reply) => {
   const session = db.getSession(id);
   if (!session) return reply.code(404).send({ error: 'session not found' });
   const messages = await history.readHistory(id, session.project_id);
+  // Last-known context usage, recomputed from the stored history so the
+  // progress bar shows on load — not only during a live turn. Resolved
+  // exactly like a turn would (session -> project -> provider -> env).
+  let context: { tokens: number; window: number; threshold: number } | null = null;
+  if (messages.length > 0) {
+    const project = db.getProject(session.project_id);
+    if (project) {
+      const providers = db.listProviders();
+      const provider =
+        (project.provider_id ? providers.find((p) => p.id === project.provider_id) : undefined) ??
+        providers.find((p) => p.is_default === 1);
+      const providerModels = provider ? db.parseProviderModels(provider.models) : [];
+      const model =
+        session.model ||
+        project.model ||
+        providerModels[0]?.id ||
+        process.env.OPENAI_MODEL ||
+        'gpt-4o-mini';
+      context = contextUsage(
+        toLlmMessages(messages),
+        project.cwd || DEFAULT_WORKSPACE,
+        providerModels.find((m) => m.id === model)?.contextWindow
+      );
+    }
+  }
   // Same shape as the legacy DB rows so the client contract is unchanged.
   reply.send({
     session,
+    context,
     messages: messages.map((m) => ({
       id: m.seq,
       session_id: id,

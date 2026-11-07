@@ -89,6 +89,27 @@ function reasoningDetailsText(details: unknown): string {
 export const DEFAULT_MODEL = () => process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
 /**
+ * Last-known context usage for a conversation: the estimated token size of
+ * the full context (system prompt + messages) against the model's window and
+ * compaction threshold. Same math as the live `context` stream event, so the
+ * on-load value and the mid-turn value agree. */
+export function contextUsage(
+  messages: CompactableMessage[],
+  workspace: string,
+  contextWindow?: number
+): { tokens: number; window: number; threshold: number } {
+  const conversation: CompactableMessage[] = [
+    { role: 'system', content: SYSTEM_PROMPT(workspace) },
+    ...messages,
+  ];
+  return {
+    tokens: estimateTokens(conversation),
+    window: contextWindow ?? DEFAULT_CONTEXT_WINDOW,
+    threshold: compactionThreshold(contextWindow),
+  };
+}
+
+/**
  * Run one full agent turn: LLM -> tool calls -> LLM -> ... until it replies
  * with plain text. Streams events as it goes. Only a pathological tool loop
  * ends the turn early, and even then via a tool-less wrap-up call (see

@@ -1,13 +1,6 @@
 import { useCallback, useRef, useState, type KeyboardEvent } from 'react';
-import { api, streamTurn } from '../api';
+import { api, streamTurn, type ContextUsage } from '../api';
 import { rowsToItems, type Item } from '../lib/items';
-
-/** Current context size vs the model's window and compaction threshold. */
-export interface ContextUsage {
-  tokens: number;
-  window: number;
-  threshold: number;
-}
 
 /**
  * The chat turn engine: items state, the SSE stream loop, send(), and the
@@ -32,6 +25,10 @@ export function useChatTurn(opts: {
   /** The session whose turn is currently streaming (survives navigation). */
   const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [context, setContext] = useState<ContextUsage | null>(null);
+  /** Last known context usage per session: live `context` events while a
+   *  turn streams, the server's recomputed value on load. Survives
+   *  navigation, so the bar always has something to show. */
+  const contextBySessionRef = useRef(new Map<string, ContextUsage>());
   const [pendingModels, setPendingModels] = useState<Record<string, string>>({});
   const [pendingEfforts, setPendingEfforts] = useState<Record<string, string>>({});
   const streamedRef = useRef(false);
@@ -66,12 +63,15 @@ export function useChatTurn(opts: {
     }
     if (streamedSessionId.current === sessionId) {
       setItems(liveRef.current);
+      setContext(contextBySessionRef.current.get(sessionId) ?? null);
       return;
     }
-    const { messages } = await api.getSession(sessionId);
+    const { context: serverContext, messages } = await api.getSession(sessionId);
     // The route may have moved on while fetching; only apply if still shown.
     if (viewSessionId.current === sessionId) {
       setItems(rowsToItems(messages));
+      if (serverContext) contextBySessionRef.current.set(sessionId, serverContext);
+      setContext(serverContext ?? contextBySessionRef.current.get(sessionId) ?? null);
     }
   }, []);
 
@@ -292,16 +292,26 @@ export function useChatTurn(opts: {
               return [...prev, done];
             });
             if (typeof ev.tokensAfter === 'number') {
-              setContext((c) => (c ? { ...c, tokens: Number(ev.tokensAfter) } : c));
+              const sid = streamedSessionId.current;
+              const prev = sid ? contextBySessionRef.current.get(sid) : undefined;
+              if (sid && prev) {
+                const updated = { ...prev, tokens: Number(ev.tokensAfter) };
+                contextBySessionRef.current.set(sid, updated);
+                if (sid === viewSessionId.current) setContext(updated);
+              }
             }
             break;
-          case 'context':
-            setContext({
+          case 'context': {
+            const usage: ContextUsage = {
               tokens: Number(ev.tokens),
               window: Number(ev.window),
               threshold: Number(ev.threshold),
-            });
+            };
+            const sid = streamedSessionId.current;
+            if (sid) contextBySessionRef.current.set(sid, usage);
+            if (sid === viewSessionId.current) setContext(usage);
             break;
+          }
           default:
             break;
         }

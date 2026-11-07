@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Project } from '../api';
-import type { ContextUsage } from '../hooks/useChatTurn';
+import type { ContextUsage } from '../api';
 import type { Item } from '../lib/items';
 import { ItemView } from './ItemView';
 import { Onboarding } from './Onboarding';

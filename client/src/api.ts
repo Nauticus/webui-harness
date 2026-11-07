@@ -71,6 +71,13 @@ export interface MessageRow {
   meta: string | null;
 }
 
+/** Last-known context size vs the model's window and compaction threshold. */
+export interface ContextUsage {
+  tokens: number;
+  window: number;
+  threshold: number;
+}
+
 export interface ServerEvent {
   type: string;
   [key: string]: unknown;
@@ -159,7 +166,9 @@ export const api = {
     }).then((r) => json<Session>(r)),
   deleteSession: (id: string) => fetch(`/api/sessions/${id}`, { method: 'DELETE' }).then((r) => json<void>(r)),
   getSession: (id: string) =>
-    fetch(`/api/sessions/${id}`).then((r) => json<{ session: Session; messages: MessageRow[] }>(r)),
+    fetch(`/api/sessions/${id}`).then((r) =>
+      json<{ session: Session; context: ContextUsage | null; messages: MessageRow[] }>(r)
+    ),
   listDirs: (p?: string) =>
     fetch(`/api/dirs${p ? `?path=${encodeURIComponent(p)}` : ''}`).then((r) => json<DirsResponse>(r)),
 };
