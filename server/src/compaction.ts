@@ -248,17 +248,19 @@ export function toLlmMessages(rows: HistoryRecord[]): CompactableMessage[] {
 
 /**
  * Summarize the old part of `messages` (no system prompt) and return the new
- * summary plus where the kept span starts. Throws when there is nothing
+ * summary plus where the kept span starts. The summarizer call is
+ * streamed: as the summary is written, the accumulated text so far is
+ * yielded (live progress for the UI). Throws when there is nothing
  * meaningful to summarize or the LLM returns nothing usable.
  */
-export async function compactMessages(opts: {
+export async function* compactMessages(opts: {
   messages: CompactableMessage[];
   provider: ProviderCreds;
   model: string;
   /** Same reasoning effort the session uses ('' = provider default). */
   reasoningEffort?: string;
   signal?: AbortSignal;
-}): Promise<CompactResult> {
+}): AsyncGenerator<string, CompactResult> {
   const { messages, provider, model, reasoningEffort, signal } = opts;
   const effortParams = effortExtraParams(provider.baseUrl, model, reasoningEffort ?? '');
   const tokensBefore = estimateTokens(messages);
@@ -285,18 +287,27 @@ export async function compactMessages(opts: {
   }
 
   const client = providerClient(provider);
-  const res = await client.chat.completions.create(
+  const stream = await client.chat.completions.create(
     {
       model,
       messages: [
         { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
         { role: 'user', content: buildSummaryPrompt(previousSummary, serialized) },
       ] as ChatCompletionMessageParam[],
+      stream: true,
       ...effortParams,
     },
     { signal }
   );
-  const summary = res.choices[0]?.message?.content?.trim() ?? '';
+  let summary = '';
+  for await (const chunk of stream) {
+    const delta = chunk.choices[0]?.delta?.content;
+    if (delta) {
+      summary += delta;
+      yield summary; // live progress: the summary so far
+    }
+  }
+  summary = summary.trim();
   if (!summary) throw new Error('compaction: model returned an empty summary');
 
   return {

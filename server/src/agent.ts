@@ -42,6 +42,11 @@ export type AgentEvent =
    * `window` is the model's context window, `threshold` the compaction trigger.
    */
   | { type: 'context'; tokens: number; window: number; threshold: number }
+  /** Compaction has started: the old part of the context is being summarized. */
+  | { type: 'compaction.start'; tokensBefore: number }
+  /** The summarizer is still writing; `tokensOut` = estimated tokens of the summary so far. */
+  | { type: 'compaction.progress'; tokensOut: number }
+  /** Compaction finished: `summary` is what the checkpoint produced. */
   | {
       type: 'compaction';
       summary: string;
@@ -125,20 +130,37 @@ export async function* runAgentTurn(opts: {
    *  matching tool result. */
   const STOPPED_NOTE = '(stopped by user before this ran)';
 
-  type CompactionEvent = Extract<AgentEvent, { type: 'compaction' }>;
+  /** True when the last compactInPlace call actually compacted (used by the
+   *  overflow-recovery path to decide whether to retry the step). */
+  let compactSucceeded = false;
 
   /**
-   * Summarize the old part of the conversation in place. Returns the event to
-   * emit on success, or false on failure — the turn then continues with the
-   * full context rather than aborting.
+   * Summarize the old part of the conversation in place, streaming
+   * start/progress/compaction events as it happens. On failure nothing is
+   * yielded (besides the start) and the turn continues with the full
+   * context rather than aborting.
    */
-  const compactInPlace = async (label: string): Promise<CompactionEvent | false> => {
+  const compactInPlace = async function* (label: string): AsyncGenerator<AgentEvent> {
+    compactSucceeded = false;
     const body = conversation.slice(1);
     try {
-      const c = await compactMessages({ messages: body, provider: opts.provider, model, signal: opts.signal });
+      yield { type: 'compaction.start', tokensBefore: estimateTokens(body) };
+      const it = compactMessages({ messages: body, provider: opts.provider, model, signal: opts.signal });
+      let lastEmit = 0;
+      let step = await it.next();
+      while (!step.done) {
+        const now = Date.now();
+        if (now - lastEmit >= 250) {
+          yield { type: 'compaction.progress', tokensOut: Math.ceil(step.value.length / 4) };
+          lastEmit = now;
+        }
+        step = await it.next();
+      }
+      const c = step.value;
       conversation.length = 1;
       conversation.push(summaryAsMessage(c.summary), ...body.slice(c.firstKeptIndex));
-      return {
+      compactSucceeded = true;
+      yield {
         type: 'compaction',
         summary: c.summary,
         firstKeptSeq: c.firstKeptSeq,
@@ -146,8 +168,7 @@ export async function* runAgentTurn(opts: {
         tokensAfter: estimateTokens(conversation),
       };
     } catch (err) {
-      console.warn(`[weblisan] ${label} compaction failed: ${String(err)}`);
-      return false;
+      if (!isAbort(err)) console.warn(`[weblisan] ${label} compaction failed: ${String(err)}`);
     }
   };
 
@@ -170,8 +191,7 @@ export async function* runAgentTurn(opts: {
     // Mid-turn compaction: tool results are the usual context growth; check
     // after each tool round, before the next LLM call.
     if (!atGuard && step > 0 && estimateTokens(conversation.slice(1)) > threshold) {
-      const c = await compactInPlace('mid-turn');
-      if (c) yield c;
+      yield* compactInPlace('mid-turn');
     }
     // Report the current context size to the UI (also right after compaction).
     yield { type: 'context', tokens: estimateTokens(conversation), window, threshold };
@@ -219,11 +239,8 @@ export async function* runAgentTurn(opts: {
       // estimated — compact aggressively and retry the same step.
       if (!overflowRetried && !atGuard && /context|token|too large|too long|exceed|overflow/i.test(String(err))) {
         overflowRetried = true;
-        const c = await compactInPlace('overflow-recovery');
-        if (c) {
-          yield c;
-          continue; // retry without consuming a step
-        }
+        yield* compactInPlace('overflow-recovery');
+        if (compactSucceeded) continue; // retry without consuming a step
       }
       throw err;
     }

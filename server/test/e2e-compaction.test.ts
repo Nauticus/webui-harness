@@ -28,6 +28,13 @@ let mockMode: 'normal' | 'error-once' = 'normal';
 let errorOnceArmed = false;
 const mockRequests: unknown[] = [];
 
+/** True when the captured request is a compaction summarizer call. */
+const isSummarizerReq = (r: unknown) => {
+  const msgs = (r as { messages?: { role?: string; content?: unknown }[] }).messages ?? [];
+  const last = msgs[msgs.length - 1];
+  return last?.role === 'user' && String(last.content ?? '').includes('Conversation to summarize:');
+};
+
 function sseWrite(res: http.ServerResponse, obj: unknown) {
   res.write(`data: ${JSON.stringify(obj)}\n\n`);
 }
@@ -87,22 +94,34 @@ const mock = http.createServer((req, res) => {
     req.on('end', () => {
       const parsed = JSON.parse(body);
       mockRequests.push(parsed);
-      const messages = (parsed.messages ?? []) as { role: string }[];
+      const messages = (parsed.messages ?? []) as { role: string; content?: unknown }[];
       const lastRole = messages[messages.length - 1]?.role;
       const hasToolResult = messages.some((m) => m.role === 'tool');
 
-      // Non-streaming call = the compaction summarizer.
-      if (parsed.stream !== true) {
-        res.setHeader('Content-Type', 'application/json');
-        res.end(
-          JSON.stringify({
-            id: 'm1',
-            object: 'chat.completion',
-            model: parsed.model,
-            choices: [{ index: 0, message: { role: 'assistant', content: MOCK_SUMMARY }, finish_reason: 'stop' }],
-            usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-          })
-        );
+      // The compaction summarizer (identified by its prompt, now streamed).
+      if (isSummarizerReq(parsed)) {
+        if (parsed.stream !== true) {
+          res.setHeader('Content-Type', 'application/json');
+          res.end(
+            JSON.stringify({
+              id: 'm1',
+              object: 'chat.completion',
+              model: parsed.model,
+              choices: [{ index: 0, message: { role: 'assistant', content: MOCK_SUMMARY }, finish_reason: 'stop' }],
+              usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
+            })
+          );
+          return;
+        }
+        res.setHeader('Content-Type', 'text/event-stream');
+        // Split the summary in chunks so progress events are exercised.
+        const chunk = (delta: unknown) =>
+          sseWrite(res, { id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta }] });
+        chunk({ role: 'assistant', content: '' });
+        for (const [i, piece] of MOCK_SUMMARY.match(/.{1,24}/gs)?.entries() ?? []) chunk({ content: piece });
+        chunk({});
+        res.write('data: [DONE]\n\n');
+        res.end();
         return;
       }
 
@@ -283,9 +302,18 @@ test('e2e: normal turn, pre-turn compaction, mid-turn compaction, overflow recov
     const events = await streamTurn(sessionId, big);
     const types = events.map((e) => e.type);
     assert.ok(types.includes('compaction'), `expected compaction, got: ${types.join(',')}`);
-    // The summarizer (non-streaming) request received the serialized span.
-    const summaryReq = mockRequests.find((r) => (r as { stream?: unknown }).stream !== true);
-    assert.ok(summaryReq, 'expected a non-streaming summarizer call');
+    // Live compaction events: start, (throttled) progress, then the end.
+    const sIdx = types.indexOf('compaction.start');
+    const pIdx = types.indexOf('compaction.progress');
+    const eIdx = types.indexOf('compaction');
+    assert.ok(sIdx !== -1 && eIdx !== -1, `expected compaction.start/end, got: ${types.join(',')}`);
+    assert.ok(sIdx < eIdx, 'start before end');
+    assert.ok(pIdx !== -1 && sIdx < pIdx && pIdx < eIdx, 'progress between start and end');
+    const endEv = events.find((e) => e.type === 'compaction') as { summary?: unknown };
+    assert.ok(String(endEv.summary ?? '').includes('## Goal'), 'end event carries the produced summary');
+    // The summarizer request received the serialized span.
+    const summaryReq = mockRequests.find((r) => isSummarizerReq(r));
+    assert.ok(summaryReq, 'expected a summarizer call');
     const reqUser = (summaryReq as { messages: { content?: string }[] }).messages[1]!;
     assert.ok(String(reqUser.content).includes('[User]:'), 'serialized span should use [User] labels');
     assert.ok(String(reqUser.content).includes('echo mock-hello'));
@@ -319,7 +347,9 @@ test('e2e: normal turn, pre-turn compaction, mid-turn compaction, overflow recov
     const events = await streamTurn(sessionId, 'and now finish');
     const complete = events.find((e) => e.type === 'message.complete');
     assert.ok(complete && String(complete.content).includes('done: mock replied'));
-    const streamReqs = mockRequests.filter((r) => (r as { stream?: unknown }).stream === true);
+    const streamReqs = mockRequests.filter(
+      (r) => (r as { stream?: unknown }).stream === true && !isSummarizerReq(r)
+    );
     assert.ok(streamReqs.length >= 1);
     const req = streamReqs[0] as { messages: { content?: string | null }[] };
     assert.ok(req.messages.some((m) => String(m.content ?? '').startsWith('CONTEXT SUMMARY')));
@@ -370,8 +400,8 @@ test('e2e: overflow recovery compacts once and retries the step', { timeout: 60_
   assert.ok(types.includes('error') === false, 'no error event expected');
 
   // The first streaming request failed with a 400 context error, then a
-  // non-streaming summarizer call happened, then the retried stream.
-  const summaryReq = mockRequests.find((r) => (r as { stream?: unknown }).stream !== true);
+  // summarizer call happened, then the retried stream.
+  const summaryReq = mockRequests.find((r) => isSummarizerReq(r));
   assert.ok(summaryReq, 'recovery must call the summarizer');
   mockMode = 'normal';
 });

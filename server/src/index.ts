@@ -15,6 +15,7 @@ import {
   summaryAsMessage,
   toLlmMessages,
   type CompactableMessage,
+  type CompactResult,
 } from './compaction';
 import { detectModels, groupModels } from './providers';
 import { isReasoningEffort, type ReasoningEffort } from './reasoning';
@@ -427,17 +428,41 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
     // Pre-turn compaction: the context may have grown past the threshold in
     // an earlier turn. Non-fatal — on failure the full context is sent.
     if (estimateTokens(messages) > compactionThreshold(contextWindow)) {
-      const c = await compactMessages({ messages, provider: providerCreds, model: model || DEFAULT_MODEL(), reasoningEffort: session.reasoning_effort, signal: stop.signal }).catch((err) => {
+      let c: CompactResult | undefined;
+      try {
+        send({ type: 'compaction.start', tokensBefore: estimateTokens(messages) });
+        const it = compactMessages({
+          messages,
+          provider: providerCreds,
+          model: model || DEFAULT_MODEL(),
+          reasoningEffort: session.reasoning_effort,
+          signal: stop.signal,
+        });
+        let last = 0;
+        let step = await it.next();
+        while (!step.done) {
+          const now = Date.now();
+          if (now - last >= 250) {
+            send({ type: 'compaction.progress', tokensOut: Math.ceil(step.value.length / 4) });
+            last = now;
+          }
+          step = await it.next();
+        }
+        c = step.value;
+      } catch (err) {
         app.log.warn(`pre-turn compaction failed: ${String(err)}`);
-        return undefined;
-      });
+      }
       if (c) {
+        messages = [summaryAsMessage(c.summary), ...messages.slice(c.firstKeptIndex)];
         await history.appendRecord(id, session.project_id, {
           role: 'compaction',
           content: c.summary,
-          meta: { firstKeptSeq: c.firstKeptSeq, tokensBefore: c.tokensBefore },
+          meta: {
+            firstKeptSeq: c.firstKeptSeq,
+            tokensBefore: c.tokensBefore,
+            tokensAfter: estimateTokens(messages),
+          },
         });
-        messages = [summaryAsMessage(c.summary), ...messages.slice(c.firstKeptIndex)];
         send({
           type: 'compaction',
           summary: c.summary,
@@ -493,7 +518,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           await history.appendRecord(id, session.project_id, {
             role: 'compaction',
             content: ev.summary,
-            meta: { firstKeptSeq: ev.firstKeptSeq, tokensBefore: ev.tokensBefore },
+            meta: { firstKeptSeq: ev.firstKeptSeq, tokensBefore: ev.tokensBefore, tokensAfter: ev.tokensAfter },
           });
           break;
         default:

@@ -7,13 +7,31 @@ export type Item =
   | { kind: 'thinking'; content: string; done: boolean }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; diff?: string }
   | { kind: 'error'; message: string }
-  | { kind: 'compaction' }
+  | {
+      kind: 'compaction';
+      /** running = summarizer in flight; done = finished (summary present unless interrupted). */
+      status: 'running' | 'done';
+      tokensBefore?: number;
+      tokensAfter?: number;
+      /** Estimated tokens of the summary written so far (live, while running). */
+      tokensOut?: number;
+      summary?: string;
+    }
   | { kind: 'stopped' };
 
 export function rowsToItems(rows: MessageRow[]): Item[] {
   const items: Item[] = [];
   for (const r of rows) {
-    let meta: { tool_calls?: unknown[]; name?: string; args?: unknown; reasoning?: string; diff?: string; stopped?: boolean } = {};
+    let meta: {
+      tool_calls?: unknown[];
+      name?: string;
+      args?: unknown;
+      reasoning?: string;
+      diff?: string;
+      stopped?: boolean;
+      tokensBefore?: number;
+      tokensAfter?: number;
+    } = {};
     if (r.meta) {
       try {
         meta = JSON.parse(r.meta);
@@ -24,8 +42,14 @@ export function rowsToItems(rows: MessageRow[]): Item[] {
     if (r.role === 'user') items.push({ kind: 'user', content: r.content });
     else if (r.role === 'compaction') {
       // A compaction record only changes what the model sees; in the chat it
-      // is a divider marking where the context was summarized.
-      items.push({ kind: 'compaction' });
+      // is a checkpoint marker whose expansion shows the produced summary.
+      items.push({
+        kind: 'compaction',
+        status: 'done',
+        summary: r.content,
+        ...(typeof meta.tokensBefore === 'number' ? { tokensBefore: meta.tokensBefore } : {}),
+        ...(typeof meta.tokensAfter === 'number' ? { tokensAfter: meta.tokensAfter } : {}),
+      });
     } else if (r.role === 'assistant') {
       if (meta.reasoning) items.push({ kind: 'thinking', content: meta.reasoning, done: true });
       if (r.content) items.push({ kind: 'assistant', content: r.content });

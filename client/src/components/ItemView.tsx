@@ -3,6 +3,7 @@ import remarkGfm from 'remark-gfm';
 import type { Item } from '../lib/items';
 import { ThinkingCard } from './ThinkingCard';
 import { ToolCard } from './ToolCard';
+import { CompactionCard } from './CompactionCard';
 
 export function ItemView({ item, isLast, busy }: { item: Item; isLast: boolean; busy: boolean }) {
   switch (item.kind) {
@@ -38,13 +39,7 @@ export function ItemView({ item, isLast, busy }: { item: Item; isLast: boolean; 
     case 'tool':
       return <ToolCard name={item.name} args={item.args} result={item.result} diff={item.diff} />;
     case 'compaction':
-      return (
-        <div className="flex items-center gap-3 px-2 py-1 text-[10px] uppercase tracking-wider text-slate-600">
-          <span className="h-px flex-1 bg-slate-800" />
-          ⧉ context summarized
-          <span className="h-px flex-1 bg-slate-800" />
-        </div>
-      );
+      return <CompactionCard item={item} />;
     case 'stopped':
       return (
         <div className="self-start py-0.5 text-[11px] text-slate-500">⏹ stopped</div>

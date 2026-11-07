@@ -207,9 +207,48 @@ export function useChatTurn(opts: {
           case 'error':
             setItems((prev) => [...prev, { kind: 'error', message: String(ev.message) }]);
             break;
+          case 'compaction.start':
+            // Compaction began: the old part of the context is being summarized.
+            setItems((prev) => [
+              ...prev,
+              { kind: 'compaction', status: 'running', tokensBefore: Number(ev.tokensBefore) },
+            ]);
+            break;
+          case 'compaction.progress':
+            // The summarizer is still writing; live token count so far.
+            setItems((prev) => {
+              for (let i = prev.length - 1; i >= 0; i--) {
+                const it = prev[i]!;
+                if (it.kind === 'compaction' && it.status === 'running') {
+                  const next = [...prev];
+                  next[i] = { ...it, tokensOut: Number(ev.tokensOut) };
+                  return next;
+                }
+              }
+              return prev;
+            });
+            break;
           case 'compaction':
-            // (Mid-)turn compaction: the model's context was just summarized.
-            setItems((prev) => [...prev, { kind: 'compaction' }]);
+            // Compaction finished: fill in the running item (or add a fresh
+            // one if the start event was missed), with the produced summary.
+            setItems((prev) => {
+              const done: Item = {
+                kind: 'compaction',
+                status: 'done',
+                summary: String(ev.summary),
+                tokensBefore: Number(ev.tokensBefore),
+                tokensAfter: Number(ev.tokensAfter),
+              };
+              for (let i = prev.length - 1; i >= 0; i--) {
+                const it = prev[i]!;
+                if (it.kind === 'compaction' && it.status === 'running') {
+                  const next = [...prev];
+                  next[i] = { ...done, tokensOut: it.tokensOut };
+                  return next;
+                }
+              }
+              return [...prev, done];
+            });
             if (typeof ev.tokensAfter === 'number') {
               setContext((c) => (c ? { ...c, tokens: Number(ev.tokensAfter) } : c));
             }
@@ -235,6 +274,11 @@ export function useChatTurn(opts: {
         { kind: 'error', message: String(err instanceof Error ? err.message : err) },
       ]);
     } finally {
+      // A compaction interrupted by stop/error never gets its end event:
+      // settle the running card so it doesn't pulse forever.
+      setItems((prev) =>
+        prev.map((it) => (it.kind === 'compaction' && it.status === 'running' ? { ...it, status: 'done' as const } : it))
+      );
       controllerRef.current = null;
       setBusy(false);
     }
