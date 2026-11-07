@@ -411,8 +411,14 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           content: c.summary,
           meta: { firstKeptSeq: c.firstKeptSeq, tokensBefore: c.tokensBefore },
         });
-        send({ type: 'compaction', summary: c.summary, firstKeptSeq: c.firstKeptSeq, tokensBefore: c.tokensBefore });
         messages = [summaryAsMessage(c.summary), ...messages.slice(c.firstKeptIndex)];
+        send({
+          type: 'compaction',
+          summary: c.summary,
+          firstKeptSeq: c.firstKeptSeq,
+          tokensBefore: c.tokensBefore,
+          tokensAfter: estimateTokens(messages),
+        });
       }
     }
     for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow })) {

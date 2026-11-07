@@ -7,6 +7,7 @@ import {
   compactMessages,
   estimateTokens,
   summaryAsMessage,
+  DEFAULT_CONTEXT_WINDOW,
   type CompactableMessage,
 } from './compaction';
 
@@ -33,13 +34,20 @@ export type AgentEvent =
   | { type: 'tool.round'; content: string; toolCalls: StoredToolCall[]; reasoning?: string }
   | { type: 'tool.start'; id: string; name: string; args: unknown }
   | { type: 'tool.result'; id: string; name: string; result: string; diff?: string }
+  /**
+   * Current context size for the UI, emitted before every LLM call
+   * (so it updates as tool results accumulate, and right after compaction).
+   * `window` is the model's context window, `threshold` the compaction trigger.
+   */
+  | { type: 'context'; tokens: number; window: number; threshold: number }
   | {
       type: 'compaction';
       summary: string;
       firstKeptSeq: number | null;
       tokensBefore: number;
+      tokensAfter: number;
     }
-  | { type: 'message.complete'; content: string; reasoning?: string }
+  | { type: 'message.complete'; content: string; tokens: number; reasoning?: string }
   | { type: 'error'; message: string };
 
 /**
@@ -88,6 +96,8 @@ export async function* runAgentTurn(opts: {
   ];
   const model = opts.model?.trim() || DEFAULT_MODEL();
   const client = providerClient(opts.provider);
+  const window = opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
+  const threshold = compactionThreshold(opts.contextWindow);
 
   type CompactionEvent = Extract<AgentEvent, { type: 'compaction' }>;
 
@@ -102,7 +112,13 @@ export async function* runAgentTurn(opts: {
       const c = await compactMessages({ messages: body, provider: opts.provider, model, signal: opts.signal });
       conversation.length = 1;
       conversation.push(summaryAsMessage(c.summary), ...body.slice(c.firstKeptIndex));
-      return { type: 'compaction', summary: c.summary, firstKeptSeq: c.firstKeptSeq, tokensBefore: c.tokensBefore };
+      return {
+        type: 'compaction',
+        summary: c.summary,
+        firstKeptSeq: c.firstKeptSeq,
+        tokensBefore: c.tokensBefore,
+        tokensAfter: estimateTokens(conversation),
+      };
     } catch (err) {
       console.warn(`[weblisan] ${label} compaction failed: ${String(err)}`);
       return false;
@@ -125,10 +141,12 @@ export async function* runAgentTurn(opts: {
 
     // Mid-turn compaction: tool results are the usual context growth; check
     // after each tool round, before the next LLM call.
-    if (!atGuard && step > 0 && estimateTokens(conversation.slice(1)) > compactionThreshold(opts.contextWindow)) {
+    if (!atGuard && step > 0 && estimateTokens(conversation.slice(1)) > threshold) {
       const c = await compactInPlace('mid-turn');
       if (c) yield c;
     }
+    // Report the current context size to the UI (also right after compaction).
+    yield { type: 'context', tokens: estimateTokens(conversation), window, threshold };
 
     let stream;
     try {
@@ -243,7 +261,17 @@ export async function* runAgentTurn(opts: {
       continue;
     }
 
-    yield { type: 'message.complete', content, ...(reasoning ? { reasoning } : {}) };
+    conversation.push({
+      role: 'assistant',
+      content: content || null,
+      ...(reasoning ? { reasoning } : {}),
+    });
+    yield {
+      type: 'message.complete',
+      content,
+      tokens: estimateTokens(conversation),
+      ...(reasoning ? { reasoning } : {}),
+    };
     return;
   }
 }

@@ -1,9 +1,36 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import type { ModelGroup } from '../api';
+import type { ContextUsage } from '../hooks/useChatTurn';
 
 /** 128000 -> '128k', 1000000 -> '1M'. */
 export function formatContextWindow(tokens: number): string {
   return tokens >= 1_000_000 ? `${Math.round(tokens / 100_000) / 10}M` : `${Math.round(tokens / 1000)}k`;
+}
+
+/**
+ * Context usage indicator: how much of the model's window is left, and
+ * whether the context is past the compaction threshold ("armed" — the
+ * harness will summarize at the next checkpoint, i.e. the next tool round
+ * or the next turn).
+ */
+function ContextBadge({ context, busy }: { context: ContextUsage; busy: boolean }) {
+  const left = context.window - context.tokens;
+  const armed = context.tokens >= context.threshold;
+  const tone = left < 0 ? 'text-rose-400' : armed ? 'text-amber-400' : 'text-slate-500';
+  const label =
+    left < 0
+      ? `⚠ over by ${formatContextWindow(-left)}`
+      : armed
+        ? `⧉ ${formatContextWindow(left)} left · compaction armed${busy ? ' (next step)' : ''}`
+        : `${formatContextWindow(left)} left`;
+  return (
+    <span
+      className={`font-mono text-[10px] tabular-nums ${tone}`}
+      title={`Context ~${formatContextWindow(context.tokens)} / ${formatContextWindow(context.window)} tokens · compaction threshold ${formatContextWindow(context.threshold)}`}
+    >
+      {label}
+    </span>
+  );
 }
 
 /**
@@ -17,6 +44,7 @@ export function formatContextWindow(tokens: number): string {
 export function Composer({
   model,
   modelGroups,
+  context,
   input,
   busy,
   disabled,
@@ -28,6 +56,7 @@ export function Composer({
 }: {
   model: string; // '' = auto (provider's default model)
   modelGroups: ModelGroup[];
+  context: ContextUsage | null; // current context size vs window/threshold
   input: string;
   busy: boolean;
   disabled: boolean;
@@ -167,7 +196,10 @@ export function Composer({
               </div>
             )}
           </div>
-          <p className="text-[11px] text-slate-600">Enter to send · Shift+Enter for newline</p>
+          <div className="flex items-center gap-3">
+            {context && <ContextBadge context={context} busy={busy} />}
+            <p className="text-[11px] text-slate-600">Enter to send · Shift+Enter for newline</p>
+          </div>
         </div>
       </div>
     </footer>

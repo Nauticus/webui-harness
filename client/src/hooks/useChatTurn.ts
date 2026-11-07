@@ -2,6 +2,13 @@ import { useCallback, useRef, useState, type KeyboardEvent } from 'react';
 import { api, streamTurn } from '../api';
 import { rowsToItems, type Item } from '../lib/items';
 
+/** Current context size vs the model's window and compaction threshold. */
+export interface ContextUsage {
+  tokens: number;
+  window: number;
+  threshold: number;
+}
+
 /**
  * The chat turn engine: items state, the SSE stream loop, send(), and the
  * per-chat model selection (pending until a session exists, then a real
@@ -20,11 +27,15 @@ export function useChatTurn(opts: {
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  const [context, setContext] = useState<ContextUsage | null>(null);
   const [pendingModels, setPendingModels] = useState<Record<string, string>>({});
   const streamedRef = useRef(false);
   const bottomRef = useRef<HTMLDivElement>(null);
 
-  const clear = useCallback(() => setItems([]), []);
+  const clear = useCallback(() => {
+    setItems([]);
+    setContext(null);
+  }, []);
 
   const pendingModelFor = useCallback(
     (projectId: string) => pendingModels[projectId] ?? '',
@@ -75,6 +86,7 @@ export function useChatTurn(opts: {
       sessionId = s.id;
       opts.onSessionCreated(s.id);
       setItems([]);
+      setContext(null); // fresh session: no history context yet
     }
     setInput('');
     setBusy(true);
@@ -143,13 +155,26 @@ export function useChatTurn(opts: {
             if (String(ev.content) && !streamedRef.current) {
               setItems((prev) => [...prev, { kind: 'assistant', content: String(ev.content) }]);
             }
+            if (typeof ev.tokens === 'number') {
+              setContext((c) => (c ? { ...c, tokens: Number(ev.tokens) } : c));
+            }
             break;
           case 'error':
             setItems((prev) => [...prev, { kind: 'error', message: String(ev.message) }]);
             break;
           case 'compaction':
-            // Mid-turn compaction: the model's context was just summarized.
+            // (Mid-)turn compaction: the model's context was just summarized.
             setItems((prev) => [...prev, { kind: 'compaction' }]);
+            if (typeof ev.tokensAfter === 'number') {
+              setContext((c) => (c ? { ...c, tokens: Number(ev.tokensAfter) } : c));
+            }
+            break;
+          case 'context':
+            setContext({
+              tokens: Number(ev.tokens),
+              window: Number(ev.window),
+              threshold: Number(ev.threshold),
+            });
             break;
           default:
             break;
@@ -179,6 +204,7 @@ export function useChatTurn(opts: {
     setInput,
     busy,
     send,
+    context,
     modelValue,
     setModel,
     loadHistory,

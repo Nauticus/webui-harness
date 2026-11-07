@@ -264,6 +264,15 @@ test('e2e: normal turn, pre-turn compaction, mid-turn compaction, overflow recov
     assert.ok(String(complete!.content).includes('done: mock replied'));
     assert.ok(!types.includes('compaction'), 'small context must not compact');
 
+    // Context usage is reported: a context event per LLM call with the
+    // per-model window, and the final estimate on the complete event.
+    const ctx = events.filter((e) => e.type === 'context');
+    assert.ok(ctx.length >= 1, 'expected context events');
+    assert.ok(typeof ctx[0]!.tokens === 'number' && ctx[0]!.tokens > 0);
+    assert.equal(ctx[0]!.window, 5000); // per-model window configured above
+    assert.equal(ctx[0]!.threshold, 3000); // window - reserve(2000)
+    assert.ok(typeof complete!.tokens === 'number' && complete!.tokens > 0);
+
     const s = await fetch(`${APP_BASE}/api/sessions/${sessionId}`).then((r) => r.json() as { messages: { role: string }[] });
     assert.deepEqual(s.messages.map((m) => m.role), ['user', 'assistant', 'tool', 'assistant']);
   });
