@@ -18,10 +18,17 @@ await app.register(cors, { origin: true });
 
 function validateCwd(cwd: unknown): string | undefined {
   if (cwd === undefined) return undefined;
-  if (typeof cwd !== 'string' || !path.isAbsolute(cwd)) {
+  if (typeof cwd !== 'string') {
+    throw Object.assign(new Error('cwd must be an absolute path or empty for the default'), {
+      statusCode: 400,
+    });
+  }
+  const trimmed = cwd.trim();
+  if (trimmed === '') return ''; // server default
+  if (!path.isAbsolute(trimmed)) {
     throw Object.assign(new Error('cwd must be an absolute path'), { statusCode: 400 });
   }
-  const resolved = path.resolve(cwd);
+  const resolved = path.resolve(trimmed);
   let stat: fs.Stats;
   try {
     stat = fs.statSync(resolved);
@@ -36,12 +43,17 @@ function validateCwd(cwd: unknown): string | undefined {
 
 function validateModel(model: unknown): string | undefined {
   if (model === undefined) return undefined;
-  if (typeof model !== 'string' || !model.trim() || model.trim().length > 120) {
-    throw Object.assign(new Error('model must be a non-empty string (max 120 chars)'), {
+  if (typeof model !== 'string') {
+    throw Object.assign(new Error('model must be a string (empty for the default)'), {
       statusCode: 400,
     });
   }
-  return model.trim();
+  const trimmed = model.trim();
+  if (trimmed === '') return ''; // server default
+  if (trimmed.length > 120) {
+    throw Object.assign(new Error('model must be at most 120 chars'), { statusCode: 400 });
+  }
+  return trimmed;
 }
 
 function toLlmMessages(rows: db.MessageRow[]): LlmMessage[] {
@@ -66,17 +78,19 @@ function toLlmMessages(rows: db.MessageRow[]): LlmMessage[] {
 
 app.get('/api/health', async () => ({ ok: true, defaultWorkspace: DEFAULT_WORKSPACE }));
 
-app.get('/api/sessions', async () => db.listSessions());
+/* ---------- projects ---------- */
 
-app.post('/api/sessions', async (req, reply) => {
-  const body = (req.body ?? {}) as { title?: string; cwd?: string; model?: string };
+app.get('/api/projects', async () => db.listProjects());
+
+app.post('/api/projects', async (req, reply) => {
+  const body = (req.body ?? {}) as { name?: string; cwd?: string; model?: string };
   try {
-    const session = db.createSession({
-      title: body.title?.trim() || undefined,
+    const project = db.createProject({
+      name: body.name?.trim() || undefined,
       cwd: validateCwd(body.cwd),
       model: validateModel(body.model),
     });
-    reply.code(201).send(session);
+    reply.code(201).send(project);
   } catch (err) {
     reply.code((err as { statusCode?: number }).statusCode ?? 500).send({
       error: String((err as Error).message),
@@ -84,22 +98,56 @@ app.post('/api/sessions', async (req, reply) => {
   }
 });
 
-app.patch('/api/sessions/:id', async (req, reply) => {
+app.patch('/api/projects/:id', async (req, reply) => {
   const { id } = req.params as { id: string };
-  if (!db.getSession(id)) return reply.code(404).send({ error: 'session not found' });
-  const body = (req.body ?? {}) as { title?: string; cwd?: string; model?: string };
+  if (!db.getProject(id)) return reply.code(404).send({ error: 'project not found' });
+  const body = (req.body ?? {}) as { name?: string; cwd?: string; model?: string };
   try {
-    const session = db.updateSession(id, {
-      title: body.title?.trim() || undefined,
+    const project = db.updateProject(id, {
+      name: body.name?.trim() || undefined,
       cwd: validateCwd(body.cwd),
       model: validateModel(body.model),
     });
-    reply.send(session);
+    reply.send(project);
   } catch (err) {
     reply.code((err as { statusCode?: number }).statusCode ?? 500).send({
       error: String((err as Error).message),
     });
   }
+});
+
+app.delete('/api/projects/:id', async (req, reply) => {
+  const { id } = req.params as { id: string };
+  if (!db.getProject(id)) return reply.code(404).send({ error: 'project not found' });
+  db.deleteProject(id);
+  reply.code(204).send();
+});
+
+/* ---------- sessions (scoped to a project) ---------- */
+
+app.get('/api/sessions', async (req, reply) => {
+  const raw = typeof req.query === 'string' ? undefined : (req.query as { projectId?: string }).projectId;
+  if (!raw) return reply.code(400).send({ error: 'projectId is required' });
+  if (!db.getProject(raw)) return reply.code(404).send({ error: 'project not found' });
+  reply.send(db.listSessions(raw));
+});
+
+app.post('/api/sessions', async (req, reply) => {
+  const body = (req.body ?? {}) as { projectId?: string; title?: string };
+  if (!body.projectId) return reply.code(400).send({ error: 'projectId is required' });
+  try {
+    const session = db.createSession(body.projectId ?? '', { title: body.title });
+    reply.code(201).send(session);
+  } catch (err) {
+    reply.code(404).send({ error: String((err as Error).message) });
+  }
+});
+
+app.delete('/api/sessions/:id', async (req, reply) => {
+  const { id } = req.params as { id: string };
+  if (!db.getSession(id)) return reply.code(404).send({ error: 'session not found' });
+  db.deleteSession(id);
+  reply.code(204).send();
 });
 
 app.get('/api/models', async () => ({ models: await listModels() }));
@@ -122,13 +170,6 @@ app.get('/api/dirs', async (req, reply) => {
   } catch {
     reply.code(400).send({ error: `cannot read directory: ${resolved}` });
   }
-});
-
-app.delete('/api/sessions/:id', async (req, reply) => {
-  const { id } = req.params as { id: string };
-  if (!db.getSession(id)) return reply.code(404).send({ error: 'session not found' });
-  db.deleteSession(id);
-  reply.code(204).send();
 });
 
 app.get('/api/sessions/:id', async (req, reply) => {
@@ -154,8 +195,10 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
 
   const session = db.getSession(id);
   if (!session) return reply.code(404).send({ error: 'session not found' });
-  const workspace = session.cwd || DEFAULT_WORKSPACE;
-  const model = session.model;
+  const project = db.getProject(session.project_id);
+  if (!project) return reply.code(404).send({ error: 'project not found' });
+  const workspace = project.cwd || DEFAULT_WORKSPACE;
+  const model = project.model;
 
   db.appendMessage(id, { role: 'user', content: body.content.trim() });
   if (session.title === 'New session') {

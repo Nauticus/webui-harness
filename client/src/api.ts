@@ -1,8 +1,15 @@
-export interface Session {
+export interface Project {
   id: string;
-  title: string;
+  name: string;
   cwd: string; // '' = server default (AGENT_WORKSPACE_DIR)
   model: string; // '' = server default (OPENAI_MODEL)
+  created_at: string;
+}
+
+export interface Session {
+  id: string;
+  project_id: string;
+  title: string;
   created_at: string;
 }
 
@@ -41,25 +48,36 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
-export interface SessionPatch {
-  title?: string;
+export interface ProjectInput {
+  name?: string;
   cwd?: string;
   model?: string;
 }
 
 export const api = {
-  listSessions: () => fetch('/api/sessions').then((r) => json<Session[]>(r)),
-  createSession: (input?: SessionPatch) =>
-    fetch('/api/sessions', {
+  listProjects: () => fetch('/api/projects').then((r) => json<Project[]>(r)),
+  createProject: (input: ProjectInput) =>
+    fetch('/api/projects', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(input ?? {}),
-    }).then((r) => json<Session>(r)),
-  updateSession: (id: string, patch: SessionPatch) =>
-    fetch(`/api/sessions/${id}`, {
+      body: JSON.stringify(input),
+    }).then((r) => json<Project>(r)),
+  updateProject: (id: string, patch: ProjectInput) =>
+    fetch(`/api/projects/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(patch),
+    }).then((r) => json<Project>(r)),
+  deleteProject: (id: string) =>
+    fetch(`/api/projects/${id}`, { method: 'DELETE' }).then((r) => json<void>(r)),
+
+  listSessions: (projectId: string) =>
+    fetch(`/api/sessions?projectId=${encodeURIComponent(projectId)}`).then((r) => json<Session[]>(r)),
+  createSession: (projectId: string) =>
+    fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projectId }),
     }).then((r) => json<Session>(r)),
   deleteSession: (id: string) => fetch(`/api/sessions/${id}`, { method: 'DELETE' }).then((r) => json<void>(r)),
   getSession: (id: string) =>

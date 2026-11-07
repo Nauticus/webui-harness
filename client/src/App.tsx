@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { api, streamTurn, type DirsResponse, type MessageRow, type Session } from './api';
+import { api, streamTurn, type DirsResponse, type MessageRow, type Project, type Session } from './api';
 
 type Item =
   | { kind: 'user'; content: string }
   | { kind: 'assistant'; content: string }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string }
   | { kind: 'error'; message: string };
+
+type ProjectDialog = { mode: 'create' } | { mode: 'edit'; project: Project } | null;
 
 function rowsToItems(rows: MessageRow[]): Item[] {
   const items: Item[] = [];
@@ -42,40 +44,74 @@ function formatArgs(args: unknown): string {
 }
 
 export default function App() {
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
+  const [projectsLoaded, setProjectsLoaded] = useState(false);
+
   const [sessions, setSessions] = useState<Session[]>([]);
-  const [activeId, setActiveId] = useState<string | null>(null);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [showSettings, setShowSettings] = useState(false);
+  const [dialog, setDialog] = useState<ProjectDialog>(null);
+
   const bottomRef = useRef<HTMLDivElement>(null);
   const streamedRef = useRef(false);
 
-  const refreshSessions = useCallback(async () => {
-    try {
-      setSessions(await api.listSessions());
-    } catch {
-      /* server not up yet */
-    }
+  const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
+
+  const refreshProjects = useCallback(async () => {
+    setProjects(await api.listProjects());
   }, []);
 
-  useEffect(() => {
-    refreshSessions();
-  }, [refreshSessions]);
+  const refreshSessions = useCallback(async (projectId: string) => {
+    setSessions(await api.listSessions(projectId));
+  }, []);
 
+  // On first load: fetch projects, activate the first one (or open the dialog).
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [items, busy]);
+    (async () => {
+      try {
+        const list = await api.listProjects();
+        setProjects(list);
+        if (list.length > 0) {
+          const first = list[0]!;
+          setActiveProjectId(first.id);
+          setSessions(await api.listSessions(first.id));
+        } else {
+          setDialog({ mode: 'create' });
+        }
+      } catch (err) {
+        setLoadError(String(err instanceof Error ? err.message : err));
+      } finally {
+        setProjectsLoaded(true);
+      }
+    })();
+  }, []);
 
-  useEffect(() => {
-    setShowSettings(false);
-  }, [activeId]);
+  const selectProject = useCallback(
+    async (id: string) => {
+      setActiveProjectId(id);
+      setActiveSessionId(null);
+      setItems([]);
+      setLoadError(null);
+      try {
+        setSessions(await api.listSessions(id));
+      } catch (err) {
+        setLoadError(String(err instanceof Error ? err.message : err));
+      }
+    },
+    []
+  );
+
+  const selectProjectRef = useRef(selectProject);
+  selectProjectRef.current = selectProject;
 
   const loadSession = useCallback(async (id: string) => {
     try {
       const { messages } = await api.getSession(id);
-      setActiveId(id);
+      setActiveSessionId(id);
       setItems(rowsToItems(messages));
       setLoadError(null);
     } catch (err) {
@@ -84,34 +120,38 @@ export default function App() {
   }, []);
 
   const newSession = useCallback(async () => {
-    const s = await api.createSession();
-    await refreshSessions();
-    setActiveId(s.id);
+    if (!activeProjectId) return;
+    const s = await api.createSession(activeProjectId);
+    await refreshSessions(activeProjectId);
+    setActiveSessionId(s.id);
     setItems([]);
     setLoadError(null);
-  }, [refreshSessions]);
+  }, [activeProjectId, refreshSessions]);
 
   const removeSession = useCallback(
     async (id: string) => {
       await api.deleteSession(id);
-      if (activeId === id) {
-        setActiveId(null);
-        setItems([]);
+      if (activeProjectId) {
+        if (activeSessionId === id) {
+          setActiveSessionId(null);
+          setItems([]);
+        }
+        await refreshSessions(activeProjectId);
       }
-      await refreshSessions();
     },
-    [activeId, refreshSessions]
+    [activeProjectId, activeSessionId, refreshSessions]
   );
 
   const send = useCallback(async () => {
     const content = input.trim();
-    if (!content || busy) return;
+    if (!content || busy || !activeProjectId) return;
 
-    let sessionId = activeId;
+    let sessionId = activeSessionId;
     if (!sessionId) {
-      const s = await api.createSession();
+      const s = await api.createSession(activeProjectId);
+      await refreshSessions(activeProjectId);
       sessionId = s.id;
-      setActiveId(s.id);
+      setActiveSessionId(s.id);
       setItems([]);
     }
     setInput('');
@@ -163,7 +203,7 @@ export default function App() {
             break;
         }
       });
-      await refreshSessions();
+      await refreshSessions(activeProjectId);
     } catch (err) {
       setItems((prev) => [
         ...prev,
@@ -172,7 +212,7 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [input, busy, activeId, refreshSessions]);
+  }, [input, busy, activeProjectId, activeSessionId, refreshSessions]);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -181,7 +221,13 @@ export default function App() {
     }
   };
 
-  const active = sessions.find((s) => s.id === activeId);
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
+  }, [items, busy]);
+
+  /* ---------- rendering ---------- */
+
+  const onboarding = projectsLoaded && projects.length === 0;
 
   return (
     <div className="flex h-full bg-slate-950 text-slate-100">
@@ -194,14 +240,17 @@ export default function App() {
         <div className="px-3 pt-1">
           <button
             onClick={() => void newSession()}
-            className="w-full rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm font-medium text-sky-300 transition-colors hover:bg-sky-500/20"
+            disabled={!activeProject}
+            className="w-full rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm font-medium text-sky-300 transition-colors hover:bg-sky-500/20 disabled:cursor-default disabled:opacity-40"
           >
             + New session
           </button>
         </div>
         <nav className="mt-2 flex-1 overflow-y-auto px-3 pb-3">
-          {sessions.length === 0 ? (
-            <p className="px-2 py-3 text-xs text-slate-600">No sessions yet</p>
+          {activeProject && sessions.length === 0 ? (
+            <p className="px-2 py-3 text-xs text-slate-600">
+              No sessions in <span className="text-slate-400">{activeProject.name}</span> yet
+            </p>
           ) : (
             <ul className="space-y-0.5">
               {sessions.map((s) => (
@@ -209,16 +258,13 @@ export default function App() {
                   <button
                     onClick={() => void loadSession(s.id)}
                     className={`w-full rounded-lg px-3 py-2 pr-7 text-left transition-colors ${
-                      s.id === activeId
+                      s.id === activeSessionId
                         ? 'bg-slate-800 text-slate-100'
                         : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
                     }`}
                   >
                     <span className="block truncate text-sm">{s.title}</span>
-                    <span className="block truncate font-mono text-[10px] text-slate-600">
-                      {s.model || 'default model'}
-                      {s.cwd && ` · ${s.cwd.replace(/^\/?home\/[^/]+\//, '')}`}
-                    </span>
+                    <span className="block truncate text-[10px] text-slate-600">{s.created_at}</span>
                   </button>
                   <button
                     onClick={() => void removeSession(s.id)}
@@ -236,39 +282,80 @@ export default function App() {
 
       {/* ---------- main ---------- */}
       <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center gap-3 border-b border-slate-800 px-5 py-3">
-          <h1 className="truncate text-sm font-semibold">{active ? active.title : 'Weblisan'}</h1>
-          {active && (
-            <>
-              <span className="hidden truncate rounded-full border border-slate-700 bg-slate-900 px-2.5 py-0.5 font-mono text-[10px] text-slate-400 sm:inline">
-                {active.model || 'default model'}
-              </span>
-              <span className="hidden max-w-56 truncate rounded-full border border-slate-700 bg-slate-900 px-2.5 py-0.5 font-mono text-[10px] text-slate-400 sm:inline">
-                {active.cwd || 'default dir'}
-              </span>
-            </>
-          )}
-          {active && (
+        {/* project tabs */}
+        <header className="flex items-center gap-1 border-b border-slate-800 px-3 py-2">
+          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
+            {projects.map((p) => (
+              <button
+                key={p.id}
+                onClick={() => void selectProject(p.id)}
+                title={`${p.model || 'default model'} · ${p.cwd || 'default dir'}`}
+                className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors ${
+                  p.id === activeProjectId
+                    ? 'bg-slate-800 font-medium text-slate-100'
+                    : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+                }`}
+              >
+                <span className="max-w-40 truncate">{p.name}</span>
+                {p.model && (
+                  <span className="hidden truncate rounded-full border border-slate-700 px-1.5 font-mono text-[9px] text-slate-500 lg:inline">
+                    {p.model}
+                  </span>
+                )}
+              </button>
+            ))}
             <button
-              onClick={() => setShowSettings((v) => !v)}
-              title="Session settings"
-              className={`ml-auto rounded-lg p-1.5 text-lg leading-none transition-colors ${
-                showSettings
-                  ? 'bg-slate-800 text-sky-400'
-                  : 'text-slate-500 hover:bg-slate-800 hover:text-slate-300'
-              }`}
+              onClick={() => setDialog({ mode: 'create' })}
+              title="New project"
+              className="shrink-0 rounded-lg px-2.5 py-1.5 text-lg leading-none text-slate-500 transition-colors hover:bg-slate-800 hover:text-sky-400"
             >
-              ⚙
+              +
             </button>
+          </div>
+          {activeProject && (
+            <>
+              <span className="hidden max-w-44 truncate rounded-full border border-slate-700 bg-slate-900 px-2.5 py-0.5 font-mono text-[10px] text-slate-400 sm:inline">
+                {activeProject.cwd || 'default dir'}
+              </span>
+              <button
+                onClick={() => setDialog({ mode: 'edit', project: activeProject })}
+                title="Project settings"
+                className="rounded-lg p-1.5 text-lg leading-none text-slate-500 transition-colors hover:bg-slate-800 hover:text-sky-400"
+              >
+                ⚙
+              </button>
+            </>
           )}
         </header>
 
-        {showSettings && active && (
-          <SessionSettings
-            key={active.id}
-            session={active}
-            onSaved={() => void refreshSessions()}
-            onClose={() => setShowSettings(false)}
+        {dialog && (
+          <ProjectDialog
+            dialog={dialog}
+            onClose={() => setDialog(null)}
+            onCreated={async (p) => {
+              await refreshProjects();
+              setDialog(null);
+              await selectProjectRef.current(p.id);
+            }}
+            onUpdated={async () => {
+              await refreshProjects();
+              setDialog(null);
+            }}
+            onDeleted={async (id) => {
+              await api.deleteProject(id);
+              const remaining = await api.listProjects();
+              setProjects(remaining);
+              setDialog(null);
+              if (activeProjectId === id) {
+                setActiveSessionId(null);
+                setItems([]);
+                if (remaining.length > 0) {
+                  const first = remaining[0]!;
+                  setActiveProjectId(first.id);
+                  setSessions(await api.listSessions(first.id));
+                }
+              }
+            }}
           />
         )}
 
@@ -279,18 +366,44 @@ export default function App() {
                 {loadError}
               </div>
             )}
-            {items.length === 0 && !loadError && (
+
+            {onboarding && (
+              <div className="m-auto max-w-md text-center">
+                <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-800 bg-slate-900 text-3xl">
+                  📦
+                </div>
+                <h2 className="text-base font-semibold text-slate-200">Create a project to get started</h2>
+                <p className="mt-2 text-sm leading-relaxed text-slate-500">
+                  A project defines the working directory and preferred model for its agent
+                  sessions. Leave either blank to use the server default.
+                </p>
+                <button
+                  onClick={() => setDialog({ mode: 'create' })}
+                  className="mt-5 rounded-xl bg-sky-500 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-sky-400"
+                >
+                  Create your first project
+                </button>
+              </div>
+            )}
+
+            {!onboarding && items.length === 0 && !loadError && !busy && (
               <div className="m-auto max-w-sm text-center">
                 <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-800 bg-slate-900 text-2xl">
                   🤖
                 </div>
-                <p className="text-sm font-medium text-slate-300">Start a conversation</p>
+                <p className="text-sm font-medium text-slate-300">
+                  {activeSessionId ? 'Pick up the conversation' : 'Start a conversation'}
+                </p>
                 <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                  The agent runs a real loop with shell &amp; file tools, sandboxed to the
-                  session's working directory.
+                  The agent runs a real loop with shell &amp; file tools, sandboxed to{' '}
+                  <span className="font-mono text-slate-400">
+                    {activeProject ? activeProject.cwd || 'the server default dir' : ''}
+                  </span>
+                  .
                 </p>
               </div>
             )}
+
             {items.map((it, i) => (
               <ItemView key={i} item={it} isLast={i === items.length - 1} busy={busy} />
             ))}
@@ -305,14 +418,18 @@ export default function App() {
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={onKeyDown}
-                placeholder="Ask the agent to do something…"
+                placeholder={
+                  activeProject
+                    ? 'Ask the agent to do something…'
+                    : 'Create a project first…'
+                }
                 rows={2}
-                disabled={busy}
+                disabled={busy || !activeProject}
                 className="max-h-40 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-slate-600 disabled:opacity-50"
               />
               <button
                 onClick={() => void send()}
-                disabled={busy || !input.trim()}
+                disabled={busy || !input.trim() || !activeProject}
                 className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-400 disabled:cursor-default disabled:bg-slate-800 disabled:text-slate-500"
               >
                 {busy ? '…' : 'Send'}
@@ -328,21 +445,27 @@ export default function App() {
   );
 }
 
-/* ---------- settings ---------- */
+/* ---------- project dialog (create / edit) ---------- */
 
-function SessionSettings({
-  session,
-  onSaved,
+function ProjectDialog({
+  dialog,
   onClose,
+  onCreated,
+  onUpdated,
+  onDeleted,
 }: {
-  session: Session;
-  onSaved: () => void;
+  dialog: Exclude<ProjectDialog, null>;
   onClose: () => void;
+  onCreated: (p: Project) => void;
+  onUpdated: () => void;
+  onDeleted: (id: string) => void;
 }) {
-  const [model, setModel] = useState(session.model);
-  const [cwd, setCwd] = useState(session.cwd);
+  const editing = dialog.mode === 'edit' ? dialog.project : null;
+  const [name, setName] = useState(editing?.name ?? '');
+  const [cwd, setCwd] = useState(editing?.cwd ?? '');
+  const [model, setModel] = useState(editing?.model ?? '');
   const [models, setModels] = useState<string[]>([]);
-  const [saveError, setSaveError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const [browsing, setBrowsing] = useState(false);
@@ -360,44 +483,56 @@ function SessionSettings({
       setDirs(await api.listDirs(p));
       setBrowsing(true);
     } catch (err) {
-      setSaveError(String(err instanceof Error ? err.message : err));
+      setError(String(err instanceof Error ? err.message : err));
     }
   }, []);
 
   const save = async () => {
     setSaving(true);
-    setSaveError(null);
+    setError(null);
     try {
-      await api.updateSession(session.id, { model, cwd: cwd.trim() });
-      onSaved();
-      onClose();
+      const payload = {
+        name: name.trim() || undefined,
+        cwd: cwd.trim(),
+        model: model.trim(),
+      };
+      if (editing) {
+        await api.updateProject(editing.id, payload);
+        onUpdated();
+      } else {
+        const p = await api.createProject(payload);
+        onCreated(p);
+      }
     } catch (err) {
-      setSaveError(String(err instanceof Error ? err.message : err));
-    } finally {
+      setError(String(err instanceof Error ? err.message : err));
       setSaving(false);
     }
+  };
+
+  const remove = () => {
+    if (!editing) return;
+    if (!window.confirm(`Delete project "${editing.name}" and all of its sessions?`)) return;
+    onDeleted(editing.id);
   };
 
   const inputCls =
     'rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-sky-500';
 
   return (
-    <div className="flex max-h-[60%] flex-col gap-3 overflow-y-auto border-b border-slate-800 bg-slate-900/70 px-5 py-4">
+    <div className="flex max-h-[65%] flex-col gap-3 overflow-y-auto border-b border-slate-800 bg-slate-900/70 px-5 py-4">
+      <h2 className="text-sm font-semibold text-slate-200">
+        {editing ? `Project: ${editing.name}` : 'New project'}
+      </h2>
+
       <div className="flex flex-col gap-1.5">
-        <label className="text-[11px] uppercase tracking-wider text-slate-500">Model</label>
+        <label className="text-[11px] uppercase tracking-wider text-slate-500">Name</label>
         <input
-          list="model-options"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          placeholder="server default"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={cwd.trim() ? cwd.trim().split('/').filter(Boolean).pop() : 'Project'}
           spellCheck={false}
           className={inputCls}
         />
-        <datalist id="model-options">
-          {models.map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
       </div>
 
       <div className="flex flex-col gap-1.5">
@@ -419,12 +554,29 @@ function SessionSettings({
         </div>
       </div>
 
+      <div className="flex flex-col gap-1.5">
+        <label className="text-[11px] uppercase tracking-wider text-slate-500">Preferred model</label>
+        <input
+          list="project-model-options"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          placeholder="server default"
+          spellCheck={false}
+          className={inputCls}
+        />
+        <datalist id="project-model-options">
+          {models.map((m) => (
+            <option key={m} value={m} />
+          ))}
+        </datalist>
+      </div>
+
       {browsing && dirs && (
         <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
           <div className="truncate border-b border-slate-800 px-3 py-2 font-mono text-[11px] text-slate-500">
             {dirs.path}
           </div>
-          <ul className="max-h-48 overflow-y-auto p-1">
+          <ul className="max-h-44 overflow-y-auto p-1">
             {dirs.parent !== dirs.path && (
               <li>
                 <button
@@ -458,22 +610,32 @@ function SessionSettings({
         </div>
       )}
 
-      {saveError && <p className="text-xs text-rose-400">{saveError}</p>}
+      {error && <p className="text-xs text-rose-400">{error}</p>}
 
-      <div className="flex justify-end gap-2">
-        <button
-          onClick={onClose}
-          className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-800"
-        >
-          Cancel
-        </button>
-        <button
-          onClick={() => void save()}
-          disabled={saving}
-          className="rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-50"
-        >
-          {saving ? 'Saving…' : 'Save'}
-        </button>
+      <div className="flex items-center gap-2">
+        {editing && (
+          <button
+            onClick={remove}
+            className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-300 transition-colors hover:bg-rose-500/20"
+          >
+            Delete project
+          </button>
+        )}
+        <div className="ml-auto flex gap-2">
+          <button
+            onClick={onClose}
+            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-800"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => void save()}
+            disabled={saving}
+            className="rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-50"
+          >
+            {saving ? 'Saving…' : editing ? 'Save' : 'Create project'}
+          </button>
+        </div>
       </div>
     </div>
   );

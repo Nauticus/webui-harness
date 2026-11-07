@@ -1,11 +1,19 @@
 import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
+import path from 'node:path';
+
+export interface ProjectRow {
+  id: string;
+  name: string;
+  cwd: string; // '' = server default (AGENT_WORKSPACE_DIR)
+  model: string; // '' = server default (OPENAI_MODEL)
+  created_at: string;
+}
 
 export interface SessionRow {
   id: string;
+  project_id: string;
   title: string;
-  cwd: string; // agent working dir ('' = server default)
-  model: string; // model id ('' = server default)
   created_at: string;
 }
 
@@ -15,7 +23,7 @@ export interface MessageRow {
   seq: number;
   role: string; // 'user' | 'assistant' | 'tool'
   content: string;
-  meta: string | null; // JSON: { tool_calls?: OpenAIToolCall[], tool_call_id?: string, name?: string }
+  meta: string | null; // JSON: { tool_calls?: OpenAIToolCall[], tool_call_id?: string, name?: string, args?: unknown }
 }
 
 export interface AppendMessageInput {
@@ -28,11 +36,17 @@ const db = new Database(':memory:');
 db.pragma('journal_mode = WAL');
 
 db.exec(`
-  CREATE TABLE IF NOT EXISTS sessions (
+  CREATE TABLE IF NOT EXISTS projects (
     id         TEXT PRIMARY KEY,
-    title      TEXT NOT NULL DEFAULT 'New session',
+    name       TEXT NOT NULL,
     cwd        TEXT NOT NULL DEFAULT '',
     model      TEXT NOT NULL DEFAULT '',
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  CREATE TABLE IF NOT EXISTS sessions (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    title      TEXT NOT NULL DEFAULT 'New session',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS messages (
@@ -46,52 +60,81 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
 `);
 
-const nextSeq = db.prepare(`
-  INSERT INTO messages (session_id, seq, role, content, meta)
-  VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?), ?, ?, ?)
-`);
+/* ---------- projects ---------- */
 
-const selectSession = db.prepare('SELECT id, title, cwd, model, created_at FROM sessions WHERE id = ?');
+const selectProject = db.prepare('SELECT id, name, cwd, model, created_at FROM projects WHERE id = ?');
 
-export interface CreateSessionInput {
-  title?: string;
+export interface ProjectInput {
+  name?: string;
   cwd?: string;
   model?: string;
 }
 
-export function createSession(input: CreateSessionInput = {}): SessionRow {
+export function createProject(input: ProjectInput = {}): ProjectRow {
   const id = randomUUID();
-  db.prepare('INSERT INTO sessions (id, title, cwd, model) VALUES (?, ?, ?, ?)').run(
+  const cwd = input.cwd ?? '';
+  const fallbackName = cwd ? path.basename(cwd) || 'Project' : 'Project';
+  const count = (db.prepare('SELECT COUNT(*) AS n FROM projects').get() as { n: number }).n;
+  const name = input.name?.trim() || `${fallbackName} ${count + 1}`.trim();
+  db.prepare('INSERT INTO projects (id, name, cwd, model) VALUES (?, ?, ?, ?)').run(
     id,
-    input.title ?? 'New session',
-    input.cwd ?? '',
+    name,
+    cwd,
     input.model ?? ''
   );
-  return selectSession.get(id) as SessionRow;
+  return selectProject.get(id) as ProjectRow;
 }
 
-export interface UpdateSessionInput {
-  title?: string;
-  cwd?: string;
-  model?: string;
+export function listProjects(): ProjectRow[] {
+  return db
+    .prepare('SELECT id, name, cwd, model, created_at FROM projects ORDER BY created_at ASC, id ASC')
+    .all() as ProjectRow[];
 }
 
-export function updateSession(id: string, patch: UpdateSessionInput): SessionRow | undefined {
-  const current = getSession(id);
+export function getProject(id: string): ProjectRow | undefined {
+  return selectProject.get(id) as ProjectRow | undefined;
+}
+
+export function updateProject(id: string, patch: ProjectInput): ProjectRow | undefined {
+  const current = getProject(id);
   if (!current) return undefined;
-  db.prepare('UPDATE sessions SET title = ?, cwd = ?, model = ? WHERE id = ?').run(
-    patch.title ?? current.title,
+  const name = patch.name !== undefined ? patch.name.trim() || current.name : current.name;
+  db.prepare('UPDATE projects SET name = ?, cwd = ?, model = ? WHERE id = ?').run(
+    name,
     patch.cwd ?? current.cwd,
     patch.model ?? current.model,
     id
   );
-  return selectSession.get(id) as SessionRow | undefined;
+  return selectProject.get(id) as ProjectRow | undefined;
 }
 
-export function listSessions(): SessionRow[] {
+export function deleteProject(id: string): void {
+  db.prepare('DELETE FROM projects WHERE id = ?').run(id);
+}
+
+/* ---------- sessions ---------- */
+
+const selectSession = db.prepare(
+  'SELECT id, project_id, title, created_at FROM sessions WHERE id = ?'
+);
+
+export function createSession(projectId: string, input: { title?: string } = {}): SessionRow {
+  if (!getProject(projectId)) throw new Error('project not found');
+  const id = randomUUID();
+  db.prepare('INSERT INTO sessions (id, project_id, title) VALUES (?, ?, ?)').run(
+    id,
+    projectId,
+    input.title?.trim() || 'New session'
+  );
+  return selectSession.get(id) as SessionRow;
+}
+
+export function listSessions(projectId: string): SessionRow[] {
   return db
-    .prepare('SELECT id, title, cwd, model, created_at FROM sessions ORDER BY created_at DESC, id DESC')
-    .all() as SessionRow[];
+    .prepare(
+      'SELECT id, project_id, title, created_at FROM sessions WHERE project_id = ? ORDER BY created_at DESC, id DESC'
+    )
+    .all(projectId) as SessionRow[];
 }
 
 export function getSession(id: string): SessionRow | undefined {
@@ -105,6 +148,13 @@ export function setSessionTitle(id: string, title: string): void {
 export function deleteSession(id: string): void {
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
 }
+
+/* ---------- messages ---------- */
+
+const nextSeq = db.prepare(`
+  INSERT INTO messages (session_id, seq, role, content, meta)
+  VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?), ?, ?, ?)
+`);
 
 export function getMessages(sessionId: string): MessageRow[] {
   return db
