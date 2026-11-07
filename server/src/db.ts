@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import fs from 'node:fs';
+import { DB_PATH } from './paths';
 
 export interface ProjectRow {
   id: string;
@@ -32,27 +33,8 @@ export interface SessionRow {
   created_at: string;
 }
 
-export interface MessageRow {
-  id: number;
-  session_id: string;
-  seq: number;
-  role: string; // 'user' | 'assistant' | 'tool'
-  content: string;
-  meta: string | null; // JSON: { tool_calls?: OpenAIToolCall[], tool_call_id?: string, name?: string, args?: unknown }
-}
-
-export interface AppendMessageInput {
-  role: 'user' | 'assistant' | 'tool';
-  content: string;
-  meta?: Record<string, unknown>;
-}
-
-// Persistent DB: WEBLISAN_DB env var, else <repo>/data/weblisan.db
-const dbPath = process.env.WEBLISAN_DB
-  ? path.resolve(process.env.WEBLISAN_DB)
-  : path.join(import.meta.dirname, '..', '..', 'data', 'weblisan.db');
-fs.mkdirSync(path.dirname(dbPath), { recursive: true });
-const db = new Database(dbPath);
+// Persistent DB: <dataDir>/weblisan.db (WEBLISAN_DATA_DIR / WEBLISAN_DB to override)
+const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 
 db.exec(`
@@ -82,15 +64,8 @@ db.exec(`
     model      TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
-  CREATE TABLE IF NOT EXISTS messages (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    session_id TEXT NOT NULL REFERENCES sessions(id) ON DELETE CASCADE,
-    seq        INTEGER NOT NULL,
-    role       TEXT NOT NULL,
-    content    TEXT NOT NULL DEFAULT '',
-    meta       TEXT
-  );
-  CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, seq);
+  -- Note: message history no longer lives in SQLite; it is stored as encrypted
+  -- per-session JSONL files under <dataDir>/history (see src/history.ts).
 `);
 
 /* ---------- projects ---------- */
@@ -286,25 +261,37 @@ export function deleteSession(id: string): void {
   db.prepare('DELETE FROM sessions WHERE id = ?').run(id);
 }
 
-/* ---------- messages ---------- */
+/* ---------- legacy in-DB message history (one-time migration) ---------- */
 
-const nextSeq = db.prepare(`
-  INSERT INTO messages (session_id, seq, role, content, meta)
-  VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?), ?, ?, ?)
-`);
-
-export function getMessages(sessionId: string): MessageRow[] {
-  return db
-    .prepare('SELECT id, session_id, seq, role, content, meta FROM messages WHERE session_id = ? ORDER BY seq ASC')
-    .all(sessionId) as MessageRow[];
+export interface LegacyMessageRow {
+  session_id: string;
+  project_id: string;
+  seq: number;
+  role: string;
+  content: string;
+  meta: string | null;
 }
 
-export function appendMessage(sessionId: string, msg: AppendMessageInput): void {
-  nextSeq.run(
-    sessionId,
-    sessionId,
-    msg.role,
-    msg.content,
-    msg.meta ? JSON.stringify(msg.meta) : null
-  );
+/** All rows of the pre-migration `messages` table ([] when it no longer exists). */
+export function legacyHistoryRows(): LegacyMessageRow[] {
+  try {
+    return db
+      .prepare(
+        `SELECT m.session_id, s.project_id, m.seq, m.role, m.content, m.meta
+           FROM messages m
+           JOIN sessions s ON s.id = m.session_id
+          ORDER BY m.seq ASC`
+      )
+      .all() as LegacyMessageRow[];
+  } catch {
+    return [];
+  }
+}
+
+export function dropLegacyMessages(): void {
+  try {
+    db.exec('DROP TABLE IF EXISTS messages');
+  } catch {
+    /* nothing to drop */
+  }
 }

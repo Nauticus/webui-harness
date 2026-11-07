@@ -6,6 +6,7 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import * as db from './db';
+import * as history from './history';
 import { runAgentTurn, type LlmMessage, type StoredToolCall } from './agent';
 import { detectModels } from './providers';
 import { DEFAULT_WORKSPACE } from './tools';
@@ -82,23 +83,21 @@ function publicProvider(row: db.ProviderRow): Record<string, unknown> {
   };
 }
 
-function toLlmMessages(rows: db.MessageRow[]): LlmMessage[] {
+function toLlmMessages(rows: history.HistoryRecord[]): LlmMessage[] {
   return rows.map((r) => {
-    let meta: { tool_calls?: StoredToolCall[]; tool_call_id?: string; name?: string; reasoning?: string } = {};
-    if (r.meta) {
-      try {
-        meta = JSON.parse(r.meta);
-      } catch {
-        meta = {};
-      }
-    }
+    const meta = (r.meta ?? {}) as {
+      tool_calls?: StoredToolCall[];
+      tool_call_id?: unknown;
+      name?: unknown;
+      reasoning?: unknown;
+    };
     return {
       role: r.role as LlmMessage['role'],
-      content: r.content,
+      content: r.content || null,
       ...(meta.tool_calls ? { tool_calls: meta.tool_calls } : {}),
-      ...(meta.tool_call_id ? { tool_call_id: meta.tool_call_id } : {}),
-      ...(meta.name ? { name: meta.name } : {}),
-      ...(r.role === 'assistant' && meta.reasoning ? { reasoning: meta.reasoning } : {}),
+      ...(meta.tool_call_id !== undefined ? { tool_call_id: String(meta.tool_call_id) } : {}),
+      ...(meta.name !== undefined ? { name: String(meta.name) } : {}),
+      ...(r.role === 'assistant' && meta.reasoning ? { reasoning: String(meta.reasoning) } : {}),
     };
   });
 }
@@ -249,6 +248,7 @@ app.patch('/api/projects/:id', async (req, reply) => {
 app.delete('/api/projects/:id', async (req, reply) => {
   const { id } = req.params as { id: string };
   if (!db.getProject(id)) return reply.code(404).send({ error: 'project not found' });
+  await history.deleteProjectHistory(id);
   db.deleteProject(id);
   reply.code(204).send();
 });
@@ -286,7 +286,9 @@ app.patch('/api/sessions/:id', async (req, reply) => {
 
 app.delete('/api/sessions/:id', async (req, reply) => {
   const { id } = req.params as { id: string };
-  if (!db.getSession(id)) return reply.code(404).send({ error: 'session not found' });
+  const session = db.getSession(id);
+  if (!session) return reply.code(404).send({ error: 'session not found' });
+  await history.deleteSessionHistory(id, session.project_id);
   db.deleteSession(id);
   reply.code(204).send();
 });
@@ -315,7 +317,19 @@ app.get('/api/sessions/:id', async (req, reply) => {
   const { id } = req.params as { id: string };
   const session = db.getSession(id);
   if (!session) return reply.code(404).send({ error: 'session not found' });
-  reply.send({ session, messages: db.getMessages(id) });
+  const messages = await history.readHistory(id, session.project_id);
+  // Same shape as the legacy DB rows so the client contract is unchanged.
+  reply.send({
+    session,
+    messages: messages.map((m) => ({
+      id: m.seq,
+      session_id: id,
+      seq: m.seq,
+      role: m.role,
+      content: m.content,
+      meta: m.meta ? JSON.stringify(m.meta) : null,
+    })),
+  });
 });
 
 /**
@@ -360,7 +374,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   const model =
     session.model || project.model || firstDetected || process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
-  db.appendMessage(id, { role: 'user', content: body.content.trim() });
+  await history.appendRecord(id, session.project_id, { role: 'user', content: body.content.trim() });
   if (session.title === 'New session') {
     db.setSessionTitle(id, body.content.trim().slice(0, 48));
   }
@@ -378,8 +392,8 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   let finalReasoning = '';
   const toolArgs = new Map<string, { name: string; args: unknown }>();
   try {
-    const history = toLlmMessages(db.getMessages(id));
-    for await (const ev of runAgentTurn({ messages: history, workspace, model, provider: providerCreds })) {
+    const historyRows = await history.readHistory(id, session.project_id);
+    for await (const ev of runAgentTurn({ messages: toLlmMessages(historyRows), workspace, model, provider: providerCreds })) {
       send(ev);
       switch (ev.type) {
         case 'message.complete':
@@ -387,7 +401,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           if (ev.reasoning) finalReasoning = ev.reasoning;
           break;
         case 'tool.round':
-          db.appendMessage(id, {
+          await history.appendRecord(id, session.project_id, {
             role: 'assistant',
             content: ev.content,
             meta: { tool_calls: ev.toolCalls, ...(ev.reasoning ? { reasoning: ev.reasoning } : {}) },
@@ -398,7 +412,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           break;
         case 'tool.result': {
           const start = toolArgs.get(ev.id);
-          db.appendMessage(id, {
+          await history.appendRecord(id, session.project_id, {
             role: 'tool',
             content: ev.result,
             meta: { tool_call_id: ev.id, name: ev.name, args: start?.args },
@@ -410,7 +424,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
       }
     }
     if (finalContent) {
-      db.appendMessage(id, {
+      await history.appendRecord(id, session.project_id, {
         role: 'assistant',
         content: finalContent,
         ...(finalReasoning ? { meta: { reasoning: finalReasoning } } : {}),
@@ -436,6 +450,36 @@ if (fs.existsSync(path.join(clientDist, 'index.html'))) {
     }
     reply.code(404).send({ error: 'not found' });
   });
+}
+
+// Ensure the history encryption key exists (auto-generated on first run) and
+// fail fast when WEBLISAN_KEY is malformed.
+history.resolveKey();
+
+// One-time migration: legacy in-DB message history -> encrypted per-session files.
+{
+  const legacy = db.legacyHistoryRows();
+  if (legacy.length > 0) {
+    const bySession = new Map<string, { projectId: string; rows: db.LegacyMessageRow[] }>();
+    for (const row of legacy) {
+      const entry = bySession.get(row.session_id) ?? { projectId: row.project_id, rows: [] };
+      entry.rows.push(row);
+      bySession.set(row.session_id, entry);
+    }
+    for (const [sessionId, { projectId, rows }] of bySession) {
+      await history.writeHistory(
+        sessionId,
+        projectId,
+        rows.map((r) => ({
+          role: r.role as 'user' | 'assistant' | 'tool',
+          content: r.content,
+          meta: r.meta ? (JSON.parse(r.meta) as Record<string, unknown>) : undefined,
+        }))
+      );
+    }
+    db.dropLegacyMessages();
+    app.log.info(`migrated ${legacy.length} legacy messages to encrypted history files`);
+  }
 }
 
 await app.listen({ port: PORT, host: '127.0.0.1' });

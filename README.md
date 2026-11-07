@@ -7,7 +7,7 @@ to a workspace directory).
 ## Stack
 
 - **TypeScript** everywhere
-- **Server**: Node.js + Fastify, SSE streaming, `better-sqlite3` (persistent on-disk DB for providers, projects, sessions, messages)
+- **Server**: Node.js + Fastify, SSE streaming, `better-sqlite3` (projects/providers/sessions index) + **encrypted on-disk session history** (AES-256-GCM, per-message)
 - **Client**: React + Vite, styled with Tailwind CSS v4 (assistant messages rendered as markdown)
 - **Agent**: any OpenAI-compatible chat API with tool calling (OpenAI, OpenRouter, Ollama, …)
 - **Providers**: OpenAI-compatible endpoints (name, base URL, API key) with automatic model detection; keys are stored in the (in-memory) DB
@@ -78,7 +78,9 @@ The top level of the UI is the **project**, shown as a tab in the header:
 | `OPENAI_MODEL` | `gpt-4o-mini` | Last-resort model id — used only when a project has no model **and** its provider has no detected models. Prefer leaving it unset |
 | `AGENT_WORKSPACE_DIR` | `./workspace` (relative to server cwd) | Sandbox dir for the agent's shell/file tools |
 | `PORT` | `3001` | API port |
-| `WEBLISAN_DB` | `<repo>/data/weblisan.db` | SQLite file for providers, projects, sessions & messages |
+| `WEBLISAN_DATA_DIR` | `<repo>/data` | Base dir for the DB file, history files and the encryption key |
+| `WEBLISAN_DB` | `<dataDir>/weblisan.db` | Fine-grained override for just the SQLite file |
+| `WEBLISAN_KEY` | auto-generated | 64-hex history encryption key; created on first run (saved to `data/key`, appended to `.env`) |
 
 After first run, providers (and their keys/URLs) live in the DB and are managed in the UI — the env values are only read once to seed the default provider.
 
@@ -98,13 +100,22 @@ Fastify ──▶ Agent loop (server/src/agent.ts)  [cwd + provider from project
    └── SSE stream back to the browser:
         message.delta / tool.round / tool.start / tool.result /
         message.complete / error / done
-
-SQLite (persistent, data/weblisan.db): providers, projects, sessions + every
-message incl. tool calls & results, so switching sessions reloads full history,
-the LLM sees full context, and nothing is lost on server restart.
 ```
 
-Delete the DB file (default `data/weblisan.db`) to reset the app to a fresh state.
+SQLite (persistent, data/weblisan.db): providers, projects, session index.
+Session history lives OUTSIDE the DB as append-only JSONL files:
+  data/history/<projectId>/<sessionId>.jsonl
+Each message is one line; content and meta are AES-256-GCM encrypted per record
+(key from WEBLISAN_KEY, auto-generated to data/key on first run). Switching
+sessions reloads full history, the LLM sees full context, and nothing is lost
+on restart. Deleting a session/project removes its history files.
+
+Delete data/ to reset the app to a fresh state.
+
+Security note: encryption protects the history files at rest (other local
+users, backups, a leaked repo/`data/` copy). It does not hide data from a
+process that can run the server with the key — and the API itself has no
+auth, so keep the port local.
 
 ## API
 
