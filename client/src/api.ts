@@ -1,0 +1,82 @@
+export interface Session {
+  id: string;
+  title: string;
+  created_at: string;
+}
+
+export interface ToolCallInfo {
+  id: string;
+  type: 'function';
+  function: { name: string; arguments: string };
+}
+
+export interface MessageRow {
+  id: number;
+  session_id: string;
+  seq: number;
+  role: string;
+  content: string;
+  meta: string | null;
+}
+
+export interface ServerEvent {
+  type: string;
+  [key: string]: unknown;
+}
+
+async function json<T>(res: Response): Promise<T> {
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
+  if (res.status === 204) return undefined as T;
+  return res.json() as Promise<T>;
+}
+
+export const api = {
+  listSessions: () => fetch('/api/sessions').then((r) => json<Session[]>(r)),
+  createSession: () =>
+    fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(
+      (r) => json<Session>(r)
+    ),
+  deleteSession: (id: string) => fetch(`/api/sessions/${id}`, { method: 'DELETE' }).then((r) => json<void>(r)),
+  getSession: (id: string) =>
+    fetch(`/api/sessions/${id}`).then((r) => json<{ session: Session; messages: MessageRow[] }>(r)),
+};
+
+/**
+ * POST a user message and consume the SSE stream of agent events.
+ */
+export async function streamTurn(
+  sessionId: string,
+  content: string,
+  onEvent: (ev: ServerEvent) => void
+): Promise<void> {
+  const res = await fetch(`/api/sessions/${sessionId}/messages`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ content }),
+  });
+  if (!res.ok || !res.body) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string };
+    throw new Error(body.error ?? `HTTP ${res.status}`);
+  }
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const blocks = buf.split('\n\n');
+    buf = blocks.pop() ?? '';
+    for (const block of blocks) {
+      const data = block
+        .split('\n')
+        .filter((l) => l.startsWith('data:'))
+        .map((l) => l.slice(5).trimStart())
+        .join('');
+      if (data) onEvent(JSON.parse(data) as ServerEvent);
+    }
+  }
+}
