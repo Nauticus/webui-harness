@@ -314,7 +314,7 @@ export default function App() {
               <button
                 key={p.id}
                 onClick={() => void selectProject(p.id)}
-                title={`${p.model || 'default model'} · ${p.cwd || 'default dir'}`}
+                title={`${p.model || 'auto model'} · ${p.cwd || 'default dir'}`}
                 className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors ${
                   p.id === activeProjectId
                     ? 'bg-slate-800 font-medium text-slate-100'
@@ -409,7 +409,7 @@ export default function App() {
                 <h2 className="text-base font-semibold text-slate-200">Create a project to get started</h2>
                 <p className="mt-2 text-sm leading-relaxed text-slate-500">
                   A project defines the working directory and preferred model for its agent
-                  sessions. Leave either blank to use the server default.
+                  sessions. Leave either blank to use the provider's defaults.
                 </p>
                 <button
                   onClick={() => setDialog({ mode: 'create' })}
@@ -612,7 +612,7 @@ function ProjectDialog({
           list="project-model-options"
           value={model}
           onChange={(e) => setModel(e.target.value)}
-          placeholder="server default"
+          placeholder="auto (provider's first model)"
           spellCheck={false}
           className={inputCls}
         />

@@ -325,7 +325,6 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   const project = db.getProject(session.project_id);
   if (!project) return reply.code(404).send({ error: 'project not found' });
   const workspace = project.cwd || DEFAULT_WORKSPACE;
-  const model = project.model;
 
   const providers = db.listProviders();
   const provider =
@@ -337,6 +336,15 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
       .send({ error: 'no providers configured — add one with POST /api/providers' });
   }
   const providerCreds = { baseUrl: provider.base_url, apiKey: provider.api_key };
+
+  // Model resolution: project setting -> provider's first detected model -> env fallback.
+  let firstDetected = '';
+  try {
+    firstDetected = (JSON.parse(provider.models) as string[])[0] ?? '';
+  } catch {
+    firstDetected = '';
+  }
+  const model = project.model || firstDetected || process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
   db.appendMessage(id, { role: 'user', content: body.content.trim() });
   if (session.title === 'New session') {

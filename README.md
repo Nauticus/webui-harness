@@ -60,6 +60,8 @@ The top level of the UI is the **project**, shown as a tab in the header:
 - Each project has its own **sessions**. The agent's working dir and model for a turn
   always come from the session's project, and the system prompt names the working dir.
 - Deleting a project deletes all of its sessions (FK cascade).
+- **Model resolution** when a project's model is left blank: the provider's first
+  detected model, then `OPENAI_MODEL`, then `gpt-4o-mini`.
 
 ## Configuration (env)
 
@@ -67,7 +69,7 @@ The top level of the UI is the **project**, shown as a tab in the header:
 |---|---|---|
 | `OPENAI_API_KEY` | – | Imported as the built-in **default provider** on first run (when no providers exist) |
 | `OPENAI_BASE_URL` | OpenAI | Base URL for the imported default provider (e.g. `http://localhost:11434/v1` for Ollama) |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Model id used when a project leaves its model blank |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Last-resort model id — used only when a project has no model **and** its provider has no detected models. Prefer leaving it unset |
 | `AGENT_WORKSPACE_DIR` | `./workspace` (relative to server cwd) | Sandbox dir for the agent's shell/file tools |
 | `PORT` | `3001` | API port |
 
