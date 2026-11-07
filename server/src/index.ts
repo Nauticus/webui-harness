@@ -84,7 +84,7 @@ function publicProvider(row: db.ProviderRow): Record<string, unknown> {
 
 function toLlmMessages(rows: db.MessageRow[]): LlmMessage[] {
   return rows.map((r) => {
-    let meta: { tool_calls?: StoredToolCall[]; tool_call_id?: string; name?: string } = {};
+    let meta: { tool_calls?: StoredToolCall[]; tool_call_id?: string; name?: string; reasoning?: string } = {};
     if (r.meta) {
       try {
         meta = JSON.parse(r.meta);
@@ -98,6 +98,7 @@ function toLlmMessages(rows: db.MessageRow[]): LlmMessage[] {
       ...(meta.tool_calls ? { tool_calls: meta.tool_calls } : {}),
       ...(meta.tool_call_id ? { tool_call_id: meta.tool_call_id } : {}),
       ...(meta.name ? { name: meta.name } : {}),
+      ...(r.role === 'assistant' && meta.reasoning ? { reasoning: meta.reasoning } : {}),
     };
   });
 }
@@ -319,11 +320,12 @@ app.get('/api/sessions/:id', async (req, reply) => {
 
 /**
  * Run one agent turn and stream progress as Server-Sent Events:
+ *   thinking.delta -> reasoning tokens from thinking-capable models (streamed)
  *   message.delta  -> text chunks of the assistant reply
- *   tool.round     -> assistant text + tool calls for this LLM step
+ *   tool.round     -> assistant text + tool calls for this LLM step (+ reasoning)
  *   tool.start     -> a tool invocation begins (name + args)
  *   tool.result    -> tool finished (truncated output)
- *   message.complete / error -> terminal events
+ *   message.complete / error -> terminal events (complete carries reasoning)
  *   done           -> final event, stream closes
  */
 app.post('/api/sessions/:id/messages', async (req, reply) => {
@@ -373,6 +375,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   const send = (data: unknown) => reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
 
   let finalContent = '';
+  let finalReasoning = '';
   const toolArgs = new Map<string, { name: string; args: unknown }>();
   try {
     const history = toLlmMessages(db.getMessages(id));
@@ -381,12 +384,13 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
       switch (ev.type) {
         case 'message.complete':
           finalContent = ev.content;
+          if (ev.reasoning) finalReasoning = ev.reasoning;
           break;
         case 'tool.round':
           db.appendMessage(id, {
             role: 'assistant',
             content: ev.content,
-            meta: { tool_calls: ev.toolCalls },
+            meta: { tool_calls: ev.toolCalls, ...(ev.reasoning ? { reasoning: ev.reasoning } : {}) },
           });
           break;
         case 'tool.start':
@@ -405,7 +409,13 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           break;
       }
     }
-    if (finalContent) db.appendMessage(id, { role: 'assistant', content: finalContent });
+    if (finalContent) {
+      db.appendMessage(id, {
+        role: 'assistant',
+        content: finalContent,
+        ...(finalReasoning ? { meta: { reasoning: finalReasoning } } : {}),
+      });
+    }
     send({ type: 'done' });
   } catch (err) {
     app.log.error(err);

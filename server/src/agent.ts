@@ -16,20 +16,32 @@ export interface LlmMessage {
   tool_calls?: StoredToolCall[];
   tool_call_id?: string;
   name?: string;
+  reasoning?: string; // assistant thinking, sent back for multi-turn continuity
 }
 
 export type AgentEvent =
   | { type: 'message.delta'; text: string }
-  | { type: 'tool.round'; content: string; toolCalls: StoredToolCall[] }
+  | { type: 'thinking.delta'; text: string }
+  | { type: 'tool.round'; content: string; toolCalls: StoredToolCall[]; reasoning?: string }
   | { type: 'tool.start'; id: string; name: string; args: unknown }
   | { type: 'tool.result'; id: string; name: string; result: string }
-  | { type: 'message.complete'; content: string }
+  | { type: 'message.complete'; content: string; reasoning?: string }
   | { type: 'error'; message: string };
 
 const MAX_STEPS = 12;
 
 const SYSTEM_PROMPT = (workspace: string) =>
   `You are a local AI agent. Your working directory is ${workspace}. You can run shell commands and read/write files inside it (and its subdirectories) — that is the only place you may write. Use tools to actually do the work; never claim to have done something you did not. Be concise in your final answer.`;
+
+/** Extract displayable text from OpenRouter-style reasoning_details entries. */
+function reasoningDetailsText(details: unknown): string {
+  if (!Array.isArray(details)) return '';
+  const parts: string[] = [];
+  for (const d of details as { text?: unknown }[]) {
+    if (d && typeof d.text === 'string' && d.text) parts.push(d.text);
+  }
+  return parts.join('\n');
+}
 
 export const DEFAULT_MODEL = () => process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
@@ -63,19 +75,42 @@ export async function* runAgentTurn(opts: {
     );
 
     let content = '';
+    let reasoning = '';
     const rawCalls: { index: number; id?: string; name?: string; args: string }[] = [];
 
     for await (const chunk of stream) {
-      const delta = chunk.choices[0]?.delta;
+      const choice = chunk.choices[0] as
+        | { delta?: unknown; message?: { reasoning?: unknown; reasoning_details?: unknown } }
+        | undefined;
+      const delta = choice?.delta as
+        | { content?: string | null; tool_calls?: unknown[]; reasoning?: unknown }
+        | undefined;
+      if (typeof delta?.reasoning === 'string' && delta.reasoning) {
+        reasoning += delta.reasoning;
+        yield { type: 'thinking.delta', text: delta.reasoning };
+      }
       if (delta?.content) {
         content += delta.content;
         yield { type: 'message.delta', text: delta.content };
       }
-      for (const tc of delta?.tool_calls ?? []) {
+      for (const tc of (delta?.tool_calls ?? []) as {
+        index: number;
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }[]) {
         const slot = rawCalls[tc.index] ?? (rawCalls[tc.index] = { index: tc.index, args: '' });
         if (tc.id) slot.id = tc.id;
         if (tc.function?.name) slot.name = tc.function.name;
         if (tc.function?.arguments) slot.args += tc.function.arguments;
+      }
+      // Final chunk: some providers deliver the (encrypted or plain) reasoning there.
+      const finMsg = choice?.message;
+      if (finMsg && !reasoning) {
+        if (typeof finMsg.reasoning === 'string' && finMsg.reasoning) {
+          reasoning = finMsg.reasoning;
+        } else {
+          reasoning = reasoningDetailsText(finMsg.reasoning_details);
+        }
       }
     }
 
@@ -86,8 +121,13 @@ export async function* runAgentTurn(opts: {
         type: 'function',
         function: { name: c.name!, arguments: c.args },
       }));
-      conversation.push({ role: 'assistant', content: content || null, tool_calls: stored });
-      yield { type: 'tool.round', content, toolCalls: stored };
+      conversation.push({
+        role: 'assistant',
+        content: content || null,
+        tool_calls: stored,
+        ...(reasoning ? { reasoning } : {}),
+      });
+      yield { type: 'tool.round', content, toolCalls: stored, ...(reasoning ? { reasoning } : {}) };
 
       for (const call of stored) {
         let args: Record<string, unknown>;
@@ -109,7 +149,7 @@ export async function* runAgentTurn(opts: {
       continue;
     }
 
-    yield { type: 'message.complete', content };
+    yield { type: 'message.complete', content, ...(reasoning ? { reasoning } : {}) };
     return;
   }
   yield { type: 'error', message: `agent stopped after ${MAX_STEPS} steps without a final answer` };

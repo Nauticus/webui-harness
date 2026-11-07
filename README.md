@@ -13,6 +13,7 @@ to a workspace directory).
 - **Providers**: OpenAI-compatible endpoints (name, base URL, API key) with automatic model detection; keys are stored in the (in-memory) DB
 - **Projects**: each project picks a working directory and provider (server defaults when left blank); sessions live under a project
 - **Per-chat model**: the model is chosen in the composer (a select next to the prompt), per session
+- **Thinking blocks**: reasoning/thinking from models that emit it (OpenAI o-series, OpenRouter, …) is streamed live, shown as a collapsible 💭 card, persisted with the message, and sent back for multi-turn continuity
 - No auth — intended for local use only
 
 ## Quick start

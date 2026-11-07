@@ -5,6 +5,7 @@ import { api, streamTurn, type DirsResponse, type MessageRow, type Project, type
 type Item =
   | { kind: 'user'; content: string }
   | { kind: 'assistant'; content: string }
+  | { kind: 'thinking'; content: string; done: boolean }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string }
   | { kind: 'error'; message: string };
 
@@ -13,7 +14,7 @@ type ProjectDialog = { mode: 'create' } | { mode: 'edit'; project: Project } | n
 function rowsToItems(rows: MessageRow[]): Item[] {
   const items: Item[] = [];
   for (const r of rows) {
-    let meta: { tool_calls?: unknown[]; name?: string; args?: unknown } = {};
+    let meta: { tool_calls?: unknown[]; name?: string; args?: unknown; reasoning?: string } = {};
     if (r.meta) {
       try {
         meta = JSON.parse(r.meta);
@@ -23,6 +24,7 @@ function rowsToItems(rows: MessageRow[]): Item[] {
     }
     if (r.role === 'user') items.push({ kind: 'user', content: r.content });
     else if (r.role === 'assistant') {
+      if (meta.reasoning) items.push({ kind: 'thinking', content: meta.reasoning, done: true });
       if (r.content) items.push({ kind: 'assistant', content: r.content });
     } else if (r.role === 'tool') {
       items.push({ kind: 'tool', id: String(r.id), name: meta.name ?? 'tool', args: meta.args, result: r.content });
@@ -188,6 +190,9 @@ export default function App() {
         switch (ev.type) {
           case 'message.delta':
             streamedRef.current = true;
+            setItems((prev) =>
+              prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it))
+            );
             setItems((prev) => {
               const next = [...prev];
               for (let i = next.length - 1; i >= 0; i--) {
@@ -200,7 +205,22 @@ export default function App() {
               return next;
             });
             break;
+          case 'thinking.delta':
+            setItems((prev) => {
+              const next = [...prev];
+              const last = next[next.length - 1];
+              if (last && last.kind === 'thinking' && !last.done) {
+                next[next.length - 1] = { ...last, content: last.content + String(ev.text) };
+              } else {
+                next.push({ kind: 'thinking', content: String(ev.text), done: false });
+              }
+              return next;
+            });
+            break;
           case 'tool.start':
+            setItems((prev) =>
+              prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it))
+            );
             setItems((prev) => [
               ...prev,
               { kind: 'tool', id: String(ev.id), name: String(ev.name), args: ev.args },
@@ -216,6 +236,9 @@ export default function App() {
             );
             break;
           case 'message.complete':
+            setItems((prev) =>
+              prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it))
+            );
             if (String(ev.content) && !streamedRef.current) {
               setItems((prev) => [...prev, { kind: 'assistant', content: String(ev.content) }]);
             }
@@ -993,6 +1016,30 @@ function ItemView({ item, isLast, busy }: { item: Item; isLast: boolean; busy: b
           <div className="prose prose-sm prose-invert max-w-none break-words rounded-2xl rounded-bl-md border border-slate-800 bg-slate-900 px-4 py-3 !text-slate-200 [&_code]:rounded [&_code]:bg-slate-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-sky-300 [&_pre]:bg-slate-950 [&_pre]:text-slate-300">
             <ReactMarkdown>{item.content || ' '}</ReactMarkdown>
           </div>
+        </div>
+      );
+    case 'thinking':
+      return (
+        <div className="w-full max-w-[85%] self-start">
+          <details
+            open={!item.done}
+            className="group overflow-hidden rounded-xl border border-violet-500/20 bg-violet-500/5"
+          >
+            <summary className="flex cursor-pointer select-none list-none items-center gap-2 px-3 py-2 text-xs text-violet-300/80 [&::-webkit-details-marker]:hidden">
+              <span>💭</span>
+              <span className="font-medium">thinking</span>
+              {item.done ? (
+                <span className="ml-auto text-violet-400/50 transition-transform group-open:rotate-90">
+                  ▸
+                </span>
+              ) : (
+                <span className="ml-auto animate-pulse text-violet-300">thinking…</span>
+              )}
+            </summary>
+            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-violet-500/10 p-3 font-mono text-[11px] leading-relaxed text-violet-200/70">
+              {item.content}
+            </pre>
+          </details>
         </div>
       );
     case 'tool':
