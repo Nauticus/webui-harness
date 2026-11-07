@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import { api, streamTurn, type MessageRow, type Session } from './api';
+import { api, streamTurn, type DirsResponse, type MessageRow, type Session } from './api';
 
 type Item =
   | { kind: 'user'; content: string }
@@ -36,6 +36,7 @@ export default function App() {
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [showSettings, setShowSettings] = useState(false);
   const bottomRef = useRef<HTMLDivElement>(null);
   const streamedRef = useRef(false);
 
@@ -54,6 +55,11 @@ export default function App() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [items, busy]);
+
+  // Close settings when switching away from a session
+  useEffect(() => {
+    setShowSettings(false);
+  }, [activeId]);
 
   const loadSession = useCallback(async (id: string) => {
     try {
@@ -199,8 +205,26 @@ export default function App() {
       <main className="main">
         <header className="main-head">
           <h1>{active ? active.title : 'Weblisan'}</h1>
-          <span className="subtitle">local agent · no auth</span>
+          {active && (
+            <span className="subtitle">
+              {active.model || 'default model'} · {active.cwd || 'default dir'}
+            </span>
+          )}
+          {active && (
+            <button className="btn gear" onClick={() => setShowSettings((v) => !v)} title="Session settings">
+              ⚙
+            </button>
+          )}
         </header>
+
+        {showSettings && active && (
+          <SessionSettings
+            key={active.id}
+            session={active}
+            onSaved={() => void refreshSessions()}
+            onClose={() => setShowSettings(false)}
+          />
+        )}
 
         <div className="messages">
           {loadError && <div className="msg error">{loadError}</div>}
@@ -232,6 +256,129 @@ export default function App() {
           </button>
         </div>
       </main>
+    </div>
+  );
+}
+
+function SessionSettings({
+  session,
+  onSaved,
+  onClose,
+}: {
+  session: Session;
+  onSaved: () => void;
+  onClose: () => void;
+}) {
+  const [model, setModel] = useState(session.model);
+  const [cwd, setCwd] = useState(session.cwd);
+  const [models, setModels] = useState<string[]>([]);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const [browsing, setBrowsing] = useState(false);
+  const [dirs, setDirs] = useState<DirsResponse | null>(null);
+
+  useEffect(() => {
+    api
+      .listModels()
+      .then((r) => setModels(r.models))
+      .catch(() => setModels([]));
+  }, []);
+
+  const browseTo = useCallback(async (p?: string) => {
+    try {
+      setDirs(await api.listDirs(p));
+      setBrowsing(true);
+    } catch (err) {
+      setSaveError(String(err instanceof Error ? err.message : err));
+    }
+  }, []);
+
+  const save = async () => {
+    setSaving(true);
+    setSaveError(null);
+    try {
+      await api.updateSession(session.id, { model, cwd: cwd.trim() });
+      onSaved();
+      onClose();
+    } catch (err) {
+      setSaveError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="settings">
+      <div className="settings-row">
+        <label>Model</label>
+        <input
+          list="model-options"
+          value={model}
+          onChange={(e) => setModel(e.target.value)}
+          placeholder="server default"
+          spellCheck={false}
+        />
+        <datalist id="model-options">
+          {models.map((m) => (
+            <option key={m} value={m} />
+          ))}
+        </datalist>
+      </div>
+
+      <div className="settings-row">
+        <label>Working dir</label>
+        <div className="cwd-row">
+          <input
+            value={cwd}
+            onChange={(e) => setCwd(e.target.value)}
+            placeholder="server default (workspace)"
+            spellCheck={false}
+          />
+          <button className="btn" onClick={() => void browseTo(cwd.trim() || undefined)}>
+            Browse
+          </button>
+        </div>
+      </div>
+
+      {browsing && dirs && (
+        <div className="dir-browser">
+          <div className="dir-current">{dirs.path}</div>
+          <ul>
+            {dirs.parent !== dirs.path && (
+              <li>
+                <button onClick={() => void browseTo(dirs.parent)}>
+                  ⬆ ..
+                </button>
+              </li>
+            )}
+            {dirs.dirs.map((d) => (
+              <li key={d}>
+                <button onClick={() => void browseTo(`${dirs.path}/${d}`)}>
+                  {d}/
+                </button>
+                <button className="dir-use" onClick={() => setCwd(`${dirs.path}/${d}`)}>
+                  use
+                </button>
+              </li>
+            ))}
+            {dirs.dirs.length === 0 && dirs.parent === dirs.path && (
+              <li className="empty">(no subdirectories)</li>
+            )}
+          </ul>
+        </div>
+      )}
+
+      {saveError && <div className="settings-error">{saveError}</div>}
+
+      <div className="settings-actions">
+        <button className="btn" onClick={onClose}>
+          Cancel
+        </button>
+        <button className="btn send" onClick={() => void save()} disabled={saving}>
+          {saving ? 'Saving…' : 'Save'}
+        </button>
+      </div>
     </div>
   );
 }

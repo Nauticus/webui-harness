@@ -4,6 +4,8 @@ import { randomUUID } from 'node:crypto';
 export interface SessionRow {
   id: string;
   title: string;
+  cwd: string; // agent working dir ('' = server default)
+  model: string; // model id ('' = server default)
   created_at: string;
 }
 
@@ -29,6 +31,8 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     id         TEXT PRIMARY KEY,
     title      TEXT NOT NULL DEFAULT 'New session',
+    cwd        TEXT NOT NULL DEFAULT '',
+    model      TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS messages (
@@ -47,22 +51,51 @@ const nextSeq = db.prepare(`
   VALUES (?, (SELECT COALESCE(MAX(seq), 0) + 1 FROM messages WHERE session_id = ?), ?, ?, ?)
 `);
 
-export function createSession(title = 'New session'): SessionRow {
+const selectSession = db.prepare('SELECT id, title, cwd, model, created_at FROM sessions WHERE id = ?');
+
+export interface CreateSessionInput {
+  title?: string;
+  cwd?: string;
+  model?: string;
+}
+
+export function createSession(input: CreateSessionInput = {}): SessionRow {
   const id = randomUUID();
-  db.prepare('INSERT INTO sessions (id, title) VALUES (?, ?)').run(id, title);
-  return getSession(id)!;
+  db.prepare('INSERT INTO sessions (id, title, cwd, model) VALUES (?, ?, ?, ?)').run(
+    id,
+    input.title ?? 'New session',
+    input.cwd ?? '',
+    input.model ?? ''
+  );
+  return selectSession.get(id) as SessionRow;
+}
+
+export interface UpdateSessionInput {
+  title?: string;
+  cwd?: string;
+  model?: string;
+}
+
+export function updateSession(id: string, patch: UpdateSessionInput): SessionRow | undefined {
+  const current = getSession(id);
+  if (!current) return undefined;
+  db.prepare('UPDATE sessions SET title = ?, cwd = ?, model = ? WHERE id = ?').run(
+    patch.title ?? current.title,
+    patch.cwd ?? current.cwd,
+    patch.model ?? current.model,
+    id
+  );
+  return selectSession.get(id) as SessionRow | undefined;
 }
 
 export function listSessions(): SessionRow[] {
   return db
-    .prepare('SELECT id, title, created_at FROM sessions ORDER BY created_at DESC, id DESC')
+    .prepare('SELECT id, title, cwd, model, created_at FROM sessions ORDER BY created_at DESC, id DESC')
     .all() as SessionRow[];
 }
 
 export function getSession(id: string): SessionRow | undefined {
-  return db.prepare('SELECT id, title, created_at FROM sessions WHERE id = ?').get(id) as
-    | SessionRow
-    | undefined;
+  return selectSession.get(id) as SessionRow | undefined;
 }
 
 export function setSessionTitle(id: string, title: string): void {

@@ -10,6 +10,7 @@ to a workspace directory).
 - **Server**: Node.js + Fastify, SSE streaming, `better-sqlite3` (in-memory DB for sessions/messages)
 - **Client**: React + Vite
 - **Agent**: any OpenAI-compatible chat API with tool calling (OpenAI, OpenRouter, Ollama, …)
+- **Per-session configuration**: each session has its own working directory (agent sandbox root) and model
 - No auth — intended for local use only
 
 ## Quick start
@@ -29,6 +30,21 @@ npm run dev
 npm run build   # builds client/dist
 npm start       # Fastify serves the API + the built client on :3001
 ```
+
+## Per-session configuration
+
+Each session stores its own settings, editable via the ⚙ button in the chat header
+(or via the API when creating/patching a session):
+
+- **Working dir (`cwd`)** — the directory the agent's shell/file tools are confined to.
+  Empty = server default (`AGENT_WORKSPACE_DIR`). Absolute, must exist; the UI has a
+  directory browser backed by `GET /api/dirs`.
+- **Model (`model`)** — the model id sent to the LLM for every turn of the session.
+  Empty = server default (`OPENAI_MODEL`). The UI's dropdown is populated from the
+  backend's `/models` endpoint (`GET /api/models`) with free-typed input as fallback.
+
+The system prompt tells the agent its working directory, and tool paths are resolved
+and confined to it.
 
 ## Configuration (env)
 
@@ -68,9 +84,12 @@ restarts. Swap `new Database(':memory:')` in `server/src/db.ts` for
 
 - `GET /api/health`
 - `GET /api/sessions` — list sessions
-- `POST /api/sessions` — create session `{ title? }`
+- `POST /api/sessions` — create session `{ title?, cwd?, model? }`
+- `PATCH /api/sessions/:id` — update session `{ title?, cwd?, model? }`
 - `DELETE /api/sessions/:id`
-- `GET /api/sessions/:id` — session + full message history
+- `GET /api/sessions/:id` — session (incl. `cwd`/`model`) + full message history
+- `GET /api/models` — model ids from the backend (static fallback list)
+- `GET /api/dirs?path=/abs/path` — directory browser data `{ path, parent, dirs[] }`
 - `POST /api/sessions/:id/messages` — `{ content }`, responds with an SSE stream
 
 ## Project layout

@@ -1,6 +1,8 @@
 export interface Session {
   id: string;
   title: string;
+  cwd: string; // '' = server default (AGENT_WORKSPACE_DIR)
+  model: string; // '' = server default (OPENAI_MODEL)
   created_at: string;
 }
 
@@ -24,6 +26,12 @@ export interface ServerEvent {
   [key: string]: unknown;
 }
 
+export interface DirsResponse {
+  path: string;
+  parent: string;
+  dirs: string[];
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -33,15 +41,32 @@ async function json<T>(res: Response): Promise<T> {
   return res.json() as Promise<T>;
 }
 
+export interface SessionPatch {
+  title?: string;
+  cwd?: string;
+  model?: string;
+}
+
 export const api = {
   listSessions: () => fetch('/api/sessions').then((r) => json<Session[]>(r)),
-  createSession: () =>
-    fetch('/api/sessions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }).then(
-      (r) => json<Session>(r)
-    ),
+  createSession: (input?: SessionPatch) =>
+    fetch('/api/sessions', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input ?? {}),
+    }).then((r) => json<Session>(r)),
+  updateSession: (id: string, patch: SessionPatch) =>
+    fetch(`/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }).then((r) => json<Session>(r)),
   deleteSession: (id: string) => fetch(`/api/sessions/${id}`, { method: 'DELETE' }).then((r) => json<void>(r)),
   getSession: (id: string) =>
     fetch(`/api/sessions/${id}`).then((r) => json<{ session: Session; messages: MessageRow[] }>(r)),
+  listModels: () => fetch('/api/models').then((r) => json<{ models: string[] }>(r)),
+  listDirs: (p?: string) =>
+    fetch(`/api/dirs${p ? `?path=${encodeURIComponent(p)}` : ''}`).then((r) => json<DirsResponse>(r)),
 };
 
 /**

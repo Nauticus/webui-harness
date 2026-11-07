@@ -3,17 +3,17 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 
 /**
- * Tool sandbox: all file operations and shell commands are confined to a
- * single workspace directory so the agent cannot touch the rest of the box.
+ * Tool sandbox: all file operations and shell commands for a turn are confined
+ * to the session's working directory, so the agent cannot touch anything else.
  */
-export const WORKSPACE = path.resolve(
+export const DEFAULT_WORKSPACE = path.resolve(
   process.env.AGENT_WORKSPACE_DIR ?? path.join(process.cwd(), 'workspace')
 );
 
-function safePath(p: string): string {
-  const abs = path.resolve(WORKSPACE, p);
-  if (abs !== WORKSPACE && !abs.startsWith(WORKSPACE + path.sep)) {
-    throw new Error(`path escapes workspace: ${p}`);
+function safePath(workspace: string, p: string): string {
+  const abs = path.resolve(workspace, p);
+  if (abs !== workspace && !abs.startsWith(workspace + path.sep)) {
+    throw new Error(`path escapes working directory: ${p}`);
   }
   return abs;
 }
@@ -94,10 +94,10 @@ const MAX_OUTPUT = 12000;
 const truncate = (s: string) =>
   s.length > MAX_OUTPUT ? `${s.slice(0, MAX_OUTPUT)}\n...[truncated ${s.length - MAX_OUTPUT} chars]` : s;
 
-function runBash(command: string, timeoutSec: number): Promise<string> {
+function runBash(command: string, timeoutSec: number, workspace: string): Promise<string> {
   return new Promise((resolve) => {
     const child = spawn('bash', ['-c', command], {
-      cwd: WORKSPACE,
+      cwd: workspace,
       env: { ...process.env },
     });
     let out = '';
@@ -120,17 +120,21 @@ function runBash(command: string, timeoutSec: number): Promise<string> {
   });
 }
 
-export async function runTool(name: string, args: Record<string, unknown>): Promise<string> {
+export async function runTool(
+  name: string,
+  args: Record<string, unknown>,
+  workspace: string
+): Promise<string> {
   try {
     switch (name) {
       case 'bash': {
         const command = String(args.command ?? '');
         if (!command.trim()) return 'error: empty command';
         const timeout = Number.isFinite(Number(args.timeout)) ? Number(args.timeout) : 30;
-        return await runBash(command, timeout);
+        return await runBash(command, timeout, workspace);
       }
       case 'read_file': {
-        const abs = safePath(String(args.path ?? ''));
+        const abs = safePath(workspace, String(args.path ?? ''));
         const raw = await fs.readFile(abs, 'utf8');
         const lines = raw.split('\n');
         const offset = Math.max(1, Number(args.offset ?? 1));
@@ -141,13 +145,13 @@ export async function runTool(name: string, args: Record<string, unknown>): Prom
         return header + slice.join('\n');
       }
       case 'write_file': {
-        const abs = safePath(String(args.path ?? ''));
+        const abs = safePath(workspace, String(args.path ?? ''));
         await fs.mkdir(path.dirname(abs), { recursive: true });
         await fs.writeFile(abs, String(args.content ?? ''), 'utf8');
-        return `wrote ${String(args.content ?? '').length} chars to ${path.relative(WORKSPACE, abs)}`;
+        return `wrote ${String(args.content ?? '').length} chars to ${path.relative(workspace, abs)}`;
       }
       case 'list_dir': {
-        const abs = safePath(String(args.path ?? '.'));
+        const abs = safePath(workspace, String(args.path ?? '.'));
         const entries = await fs.readdir(abs, { withFileTypes: true });
         if (entries.length === 0) return '(empty)';
         return entries
