@@ -1,13 +1,16 @@
 import { TOOL_ICONS, formatArgs } from '../lib/items';
+import { DiffView } from './DiffView';
 
 export function ToolCard({
   name,
   args,
   result,
+  diff,
 }: {
   name: string;
   args?: unknown;
   result?: string;
+  diff?: string;
 }) {
   return (
     <div className="w-full max-w-[85%] self-start">
@@ -30,10 +33,14 @@ export function ToolCard({
               {JSON.stringify(args, null, 2)}
             </pre>
           )}
-          {result && (
-            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-dashed border-slate-800 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
-              {result}
-            </pre>
+          {diff ? (
+            <DiffView diff={diff} summary={result?.split('\n')[0]} />
+          ) : (
+            result && (
+              <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-dashed border-slate-800 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
+                {result}
+              </pre>
+            )
           )}
         </div>
       </details>

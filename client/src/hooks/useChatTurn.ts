@@ -127,7 +127,11 @@ export function useChatTurn(opts: {
             setItems((prev) =>
               prev.map((it) =>
                 it.kind === 'tool' && it.id === String(ev.id)
-                  ? { ...it, result: String(ev.result) }
+                  ? {
+                      ...it,
+                      result: String(ev.result),
+                      ...(typeof ev.diff === 'string' ? { diff: ev.diff } : {}),
+                    }
                   : it
               )
             );

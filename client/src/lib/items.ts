@@ -5,13 +5,13 @@ export type Item =
   | { kind: 'user'; content: string }
   | { kind: 'assistant'; content: string }
   | { kind: 'thinking'; content: string; done: boolean }
-  | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string }
+  | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; diff?: string }
   | { kind: 'error'; message: string };
 
 export function rowsToItems(rows: MessageRow[]): Item[] {
   const items: Item[] = [];
   for (const r of rows) {
-    let meta: { tool_calls?: unknown[]; name?: string; args?: unknown; reasoning?: string } = {};
+    let meta: { tool_calls?: unknown[]; name?: string; args?: unknown; reasoning?: string; diff?: string } = {};
     if (r.meta) {
       try {
         meta = JSON.parse(r.meta);
@@ -30,6 +30,7 @@ export function rowsToItems(rows: MessageRow[]): Item[] {
         name: meta.name ?? 'tool',
         args: meta.args,
         result: r.content,
+        ...(meta.diff ? { diff: meta.diff } : {}),
       });
     }
   }
@@ -40,6 +41,7 @@ export const TOOL_ICONS: Record<string, string> = {
   bash: '💻',
   read_file: '📖',
   write_file: '✍️',
+  edit_file: '🪄',
   list_dir: '📁',
 };
 

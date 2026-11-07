@@ -24,14 +24,14 @@ export type AgentEvent =
   | { type: 'thinking.delta'; text: string }
   | { type: 'tool.round'; content: string; toolCalls: StoredToolCall[]; reasoning?: string }
   | { type: 'tool.start'; id: string; name: string; args: unknown }
-  | { type: 'tool.result'; id: string; name: string; result: string }
+  | { type: 'tool.result'; id: string; name: string; result: string; diff?: string }
   | { type: 'message.complete'; content: string; reasoning?: string }
   | { type: 'error'; message: string };
 
 const MAX_STEPS = 12;
 
 const SYSTEM_PROMPT = (workspace: string) =>
-  `You are a local AI agent. Your working directory is ${workspace}. You can run shell commands and read/write files inside it (and its subdirectories) — that is the only place you may write. Use tools to actually do the work; never claim to have done something you did not. Be concise in your final answer.`;
+  `You are a local AI agent. Your working directory is ${workspace}. You can run shell commands and read/write files inside it (and its subdirectories) — that is the only place you may write. To modify an existing file use edit_file (targeted replacement) rather than rewriting the whole file with write_file; write_file is for new files. Use tools to actually do the work; never claim to have done something you did not. Be concise in your final answer.`;
 
 /** Extract displayable text from OpenRouter-style reasoning_details entries. */
 function reasoningDetailsText(details: unknown): string {
@@ -138,11 +138,17 @@ export async function* runAgentTurn(opts: {
         }
         yield { type: 'tool.start', id: call.id, name: call.function.name, args };
         const result = await runTool(call.function.name, args, opts.workspace);
-        yield { type: 'tool.result', id: call.id, name: call.function.name, result };
+        yield {
+          type: 'tool.result',
+          id: call.id,
+          name: call.function.name,
+          result: result.output,
+          ...(result.diff ? { diff: result.diff } : {}),
+        };
         conversation.push({
           role: 'tool',
           tool_call_id: call.id,
-          content: result,
+          content: result.output,
           name: call.function.name,
         });
       }

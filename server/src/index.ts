@@ -415,7 +415,12 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           await history.appendRecord(id, session.project_id, {
             role: 'tool',
             content: ev.result,
-            meta: { tool_call_id: ev.id, name: ev.name, args: start?.args },
+            meta: {
+              tool_call_id: ev.id,
+              name: ev.name,
+              args: start?.args,
+              ...(ev.diff ? { diff: ev.diff } : {}),
+            },
           });
           break;
         }

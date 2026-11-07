@@ -35,7 +35,7 @@ export function ItemView({ item, isLast, busy }: { item: Item; isLast: boolean; 
     case 'thinking':
       return <ThinkingCard content={item.content} done={item.done} />;
     case 'tool':
-      return <ToolCard name={item.name} args={item.args} result={item.result} />;
+      return <ToolCard name={item.name} args={item.args} result={item.result} diff={item.diff} />;
     case 'error':
       return (
         <div className="self-start">
