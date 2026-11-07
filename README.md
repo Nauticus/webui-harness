@@ -8,7 +8,7 @@ to a workspace directory).
 
 - **TypeScript** everywhere
 - **Server**: Node.js + Fastify, SSE streaming, `better-sqlite3` (in-memory DB for sessions/messages)
-- **Client**: React + Vite
+- **Client**: React + Vite, styled with Tailwind CSS v4 (assistant messages rendered as markdown)
 - **Agent**: any OpenAI-compatible chat API with tool calling (OpenAI, OpenRouter, Ollama, …)
 - **Per-session configuration**: each session has its own working directory (agent sandbox root) and model
 - No auth — intended for local use only

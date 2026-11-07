@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import ReactMarkdown from 'react-markdown';
 import { api, streamTurn, type DirsResponse, type MessageRow, type Session } from './api';
 
 type Item =
@@ -21,12 +22,23 @@ function rowsToItems(rows: MessageRow[]): Item[] {
     if (r.role === 'user') items.push({ kind: 'user', content: r.content });
     else if (r.role === 'assistant') {
       if (r.content) items.push({ kind: 'assistant', content: r.content });
-      // assistant rows that only carry tool_calls are represented by the tool items
     } else if (r.role === 'tool') {
       items.push({ kind: 'tool', id: String(r.id), name: meta.name ?? 'tool', args: meta.args, result: r.content });
     }
   }
   return items;
+}
+
+const TOOL_ICONS: Record<string, string> = {
+  bash: '$',
+  read_file: '📄',
+  write_file: '✏️',
+  list_dir: '📁',
+};
+
+function formatArgs(args: unknown): string {
+  const s = typeof args === 'string' ? args : JSON.stringify(args);
+  return s.length > 90 ? `${s.slice(0, 90)}…` : s;
 }
 
 export default function App() {
@@ -56,7 +68,6 @@ export default function App() {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [items, busy]);
 
-  // Close settings when switching away from a session
   useEffect(() => {
     setShowSettings(false);
   }, [activeId]);
@@ -125,8 +136,6 @@ export default function App() {
               return next;
             });
             break;
-          case 'tool.round':
-            break;
           case 'tool.start':
             setItems((prev) => [
               ...prev,
@@ -175,43 +184,80 @@ export default function App() {
   const active = sessions.find((s) => s.id === activeId);
 
   return (
-    <div className="layout">
-      <aside className="sidebar">
-        <div className="sidebar-head">
-          <span className="logo">weblisan</span>
-          <button className="btn new" onClick={() => void newSession()}>
-            + New
+    <div className="flex h-full bg-slate-950 text-slate-100">
+      {/* ---------- sidebar ---------- */}
+      <aside className="flex w-64 shrink-0 flex-col border-r border-slate-800 bg-slate-900/50">
+        <div className="flex items-center justify-between px-4 pb-2 pt-4">
+          <span className="text-sm font-bold tracking-widest text-sky-400">weblisan</span>
+          <span className="text-[10px] uppercase tracking-wider text-slate-600">local agent</span>
+        </div>
+        <div className="px-3 pt-1">
+          <button
+            onClick={() => void newSession()}
+            className="w-full rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm font-medium text-sky-300 transition-colors hover:bg-sky-500/20"
+          >
+            + New session
           </button>
         </div>
-        <ul className="sessions">
-          {sessions.map((s) => (
-            <li key={s.id} className={s.id === activeId ? 'active' : ''}>
-              <button className="session-title" onClick={() => void loadSession(s.id)} title={s.title}>
-                {s.title}
-              </button>
-              <button
-                className="session-del"
-                onClick={() => void removeSession(s.id)}
-                title="Delete session"
-              >
-                ×
-              </button>
-            </li>
-          ))}
-          {sessions.length === 0 && <li className="empty">No sessions yet</li>}
-        </ul>
+        <nav className="mt-2 flex-1 overflow-y-auto px-3 pb-3">
+          {sessions.length === 0 ? (
+            <p className="px-2 py-3 text-xs text-slate-600">No sessions yet</p>
+          ) : (
+            <ul className="space-y-0.5">
+              {sessions.map((s) => (
+                <li key={s.id} className="group relative">
+                  <button
+                    onClick={() => void loadSession(s.id)}
+                    className={`w-full rounded-lg px-3 py-2 pr-7 text-left transition-colors ${
+                      s.id === activeId
+                        ? 'bg-slate-800 text-slate-100'
+                        : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+                    }`}
+                  >
+                    <span className="block truncate text-sm">{s.title}</span>
+                    <span className="block truncate font-mono text-[10px] text-slate-600">
+                      {s.model || 'default model'}
+                      {s.cwd && ` · ${s.cwd.replace(/^\/?home\/[^/]+\//, '')}`}
+                    </span>
+                  </button>
+                  <button
+                    onClick={() => void removeSession(s.id)}
+                    title="Delete session"
+                    className="absolute right-2 top-1/2 hidden h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-700 hover:text-rose-400 group-hover:flex"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </nav>
       </aside>
 
-      <main className="main">
-        <header className="main-head">
-          <h1>{active ? active.title : 'Weblisan'}</h1>
+      {/* ---------- main ---------- */}
+      <main className="flex min-w-0 flex-1 flex-col">
+        <header className="flex items-center gap-3 border-b border-slate-800 px-5 py-3">
+          <h1 className="truncate text-sm font-semibold">{active ? active.title : 'Weblisan'}</h1>
           {active && (
-            <span className="subtitle">
-              {active.model || 'default model'} · {active.cwd || 'default dir'}
-            </span>
+            <>
+              <span className="hidden truncate rounded-full border border-slate-700 bg-slate-900 px-2.5 py-0.5 font-mono text-[10px] text-slate-400 sm:inline">
+                {active.model || 'default model'}
+              </span>
+              <span className="hidden max-w-56 truncate rounded-full border border-slate-700 bg-slate-900 px-2.5 py-0.5 font-mono text-[10px] text-slate-400 sm:inline">
+                {active.cwd || 'default dir'}
+              </span>
+            </>
           )}
           {active && (
-            <button className="btn gear" onClick={() => setShowSettings((v) => !v)} title="Session settings">
+            <button
+              onClick={() => setShowSettings((v) => !v)}
+              title="Session settings"
+              className={`ml-auto rounded-lg p-1.5 text-lg leading-none transition-colors ${
+                showSettings
+                  ? 'bg-slate-800 text-sky-400'
+                  : 'text-slate-500 hover:bg-slate-800 hover:text-slate-300'
+              }`}
+            >
               ⚙
             </button>
           )}
@@ -226,39 +272,63 @@ export default function App() {
           />
         )}
 
-        <div className="messages">
-          {loadError && <div className="msg error">{loadError}</div>}
-          {items.length === 0 && !loadError && (
-            <div className="placeholder">
-              <p>Start a conversation.</p>
-              <p className="dim">
-                The agent has shell + file tools sandboxed to <code>server/workspace/</code>.
-              </p>
-            </div>
-          )}
-          {items.map((it, i) => (
-            <ItemView key={i} item={it} isLast={i === items.length - 1} busy={busy} />
-          ))}
-          <div ref={bottomRef} />
+        <div className="flex-1 overflow-y-auto px-5 py-6">
+          <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
+            {loadError && (
+              <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-300">
+                {loadError}
+              </div>
+            )}
+            {items.length === 0 && !loadError && (
+              <div className="m-auto max-w-sm text-center">
+                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-800 bg-slate-900 text-2xl">
+                  🤖
+                </div>
+                <p className="text-sm font-medium text-slate-300">Start a conversation</p>
+                <p className="mt-1 text-xs leading-relaxed text-slate-500">
+                  The agent runs a real loop with shell &amp; file tools, sandboxed to the
+                  session's working directory.
+                </p>
+              </div>
+            )}
+            {items.map((it, i) => (
+              <ItemView key={i} item={it} isLast={i === items.length - 1} busy={busy} />
+            ))}
+            <div ref={bottomRef} />
+          </div>
         </div>
 
-        <div className="composer">
-          <textarea
-            value={input}
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={onKeyDown}
-            placeholder="Ask the agent to do something…  (Enter to send, Shift+Enter for newline)"
-            rows={2}
-            disabled={busy}
-          />
-          <button className="btn send" onClick={() => void send()} disabled={busy || !input.trim()}>
-            {busy ? 'Running…' : 'Send'}
-          </button>
-        </div>
+        <footer className="border-t border-slate-800 px-5 py-4">
+          <div className="mx-auto w-full max-w-3xl">
+            <div className="flex items-end gap-2 rounded-2xl border border-slate-700 bg-slate-900 p-2 transition-colors focus-within:border-sky-500/60">
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={onKeyDown}
+                placeholder="Ask the agent to do something…"
+                rows={2}
+                disabled={busy}
+                className="max-h-40 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-slate-600 disabled:opacity-50"
+              />
+              <button
+                onClick={() => void send()}
+                disabled={busy || !input.trim()}
+                className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-400 disabled:cursor-default disabled:bg-slate-800 disabled:text-slate-500"
+              >
+                {busy ? '…' : 'Send'}
+              </button>
+            </div>
+            <p className="mt-1.5 text-center text-[11px] text-slate-600">
+              Enter to send · Shift+Enter for newline
+            </p>
+          </div>
+        </footer>
       </main>
     </div>
   );
 }
+
+/* ---------- settings ---------- */
 
 function SessionSettings({
   session,
@@ -308,16 +378,20 @@ function SessionSettings({
     }
   };
 
+  const inputCls =
+    'rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-sky-500';
+
   return (
-    <div className="settings">
-      <div className="settings-row">
-        <label>Model</label>
+    <div className="flex max-h-[60%] flex-col gap-3 overflow-y-auto border-b border-slate-800 bg-slate-900/70 px-5 py-4">
+      <div className="flex flex-col gap-1.5">
+        <label className="text-[11px] uppercase tracking-wider text-slate-500">Model</label>
         <input
           list="model-options"
           value={model}
           onChange={(e) => setModel(e.target.value)}
           placeholder="server default"
           spellCheck={false}
+          className={inputCls}
         />
         <datalist id="model-options">
           {models.map((m) => (
@@ -326,56 +400,78 @@ function SessionSettings({
         </datalist>
       </div>
 
-      <div className="settings-row">
-        <label>Working dir</label>
-        <div className="cwd-row">
+      <div className="flex flex-col gap-1.5">
+        <label className="text-[11px] uppercase tracking-wider text-slate-500">Working dir</label>
+        <div className="flex gap-2">
           <input
             value={cwd}
             onChange={(e) => setCwd(e.target.value)}
             placeholder="server default (workspace)"
             spellCheck={false}
+            className={`${inputCls} flex-1`}
           />
-          <button className="btn" onClick={() => void browseTo(cwd.trim() || undefined)}>
+          <button
+            onClick={() => void browseTo(cwd.trim() || undefined)}
+            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-300 transition-colors hover:border-slate-600"
+          >
             Browse
           </button>
         </div>
       </div>
 
       {browsing && dirs && (
-        <div className="dir-browser">
-          <div className="dir-current">{dirs.path}</div>
-          <ul>
+        <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
+          <div className="truncate border-b border-slate-800 px-3 py-2 font-mono text-[11px] text-slate-500">
+            {dirs.path}
+          </div>
+          <ul className="max-h-48 overflow-y-auto p-1">
             {dirs.parent !== dirs.path && (
               <li>
-                <button onClick={() => void browseTo(dirs.parent)}>
+                <button
+                  onClick={() => void browseTo(dirs.parent)}
+                  className="w-full rounded-md px-2 py-1.5 text-left font-mono text-xs text-slate-400 hover:bg-slate-800"
+                >
                   ⬆ ..
                 </button>
               </li>
             )}
             {dirs.dirs.map((d) => (
-              <li key={d}>
-                <button onClick={() => void browseTo(`${dirs.path}/${d}`)}>
+              <li key={d} className="flex items-center gap-1">
+                <button
+                  onClick={() => void browseTo(`${dirs.path}/${d}`)}
+                  className="flex-1 truncate rounded-md px-2 py-1.5 text-left font-mono text-xs text-slate-300 hover:bg-slate-800"
+                >
                   {d}/
                 </button>
-                <button className="dir-use" onClick={() => setCwd(`${dirs.path}/${d}`)}>
+                <button
+                  onClick={() => setCwd(`${dirs.path}/${d}`)}
+                  className="rounded-md px-2 py-1.5 text-xs text-sky-400 hover:bg-slate-800"
+                >
                   use
                 </button>
               </li>
             ))}
             {dirs.dirs.length === 0 && dirs.parent === dirs.path && (
-              <li className="empty">(no subdirectories)</li>
+              <li className="px-2 py-1.5 text-xs text-slate-600">(no subdirectories)</li>
             )}
           </ul>
         </div>
       )}
 
-      {saveError && <div className="settings-error">{saveError}</div>}
+      {saveError && <p className="text-xs text-rose-400">{saveError}</p>}
 
-      <div className="settings-actions">
-        <button className="btn" onClick={onClose}>
+      <div className="flex justify-end gap-2">
+        <button
+          onClick={onClose}
+          className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-800"
+        >
           Cancel
         </button>
-        <button className="btn send" onClick={() => void save()} disabled={saving}>
+        <button
+          onClick={() => void save()}
+          disabled={saving}
+          className="rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-50"
+        >
           {saving ? 'Saving…' : 'Save'}
         </button>
       </div>
@@ -383,57 +479,77 @@ function SessionSettings({
   );
 }
 
+/* ---------- items ---------- */
+
 function ItemView({ item, isLast, busy }: { item: Item; isLast: boolean; busy: boolean }) {
   switch (item.kind) {
     case 'user':
       return (
-        <div className="msg user">
-          <div className="bubble">{item.content}</div>
+        <div className="self-end">
+          <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md border border-sky-500/30 bg-sky-500/10 px-4 py-2.5 text-sm">
+            {item.content}
+          </div>
         </div>
       );
     case 'assistant':
       if (!item.content && isLast && busy) {
         return (
-          <div className="msg assistant">
-            <div className="bubble thinking">
-              <span className="dot" />
-              <span className="dot" />
-              <span className="dot" />
+          <div className="self-start">
+            <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-md border border-slate-800 bg-slate-900 px-4 py-3.5">
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400" />
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400 [animation-delay:150ms]" />
+              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400 [animation-delay:300ms]" />
             </div>
           </div>
         );
       }
       return (
-        <div className="msg assistant">
-          <div className="bubble">{item.content || ' '}</div>
+        <div className="self-start">
+          <div className="prose prose-sm prose-invert max-w-none break-words rounded-2xl rounded-bl-md border border-slate-800 bg-slate-900 px-4 py-3 !text-slate-200 [&_code]:rounded [&_code]:bg-slate-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-sky-300 [&_pre]:bg-slate-950 [&_pre]:text-slate-300">
+            <ReactMarkdown>{item.content || ' '}</ReactMarkdown>
+          </div>
         </div>
       );
     case 'tool':
       return (
-        <div className="tool">
-          <details open={false}>
-            <summary>
-              <span className="tool-name">{item.name}</span>
+        <div className="w-full max-w-[85%] self-start">
+          <details className="group overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+            <summary className="flex cursor-pointer select-none list-none items-center gap-2 px-3 py-2 text-xs text-slate-400 [&::-webkit-details-marker]:hidden">
+              <span className="w-4 text-center">{TOOL_ICONS[item.name] ?? '🔧'}</span>
+              <span className="font-semibold text-emerald-400">{item.name}</span>
               {item.args !== undefined && (
-                <span className="tool-args">{formatArgs(item.args)}</span>
+                <span className="truncate font-mono text-[11px] text-slate-600">
+                  {formatArgs(item.args)}
+                </span>
               )}
-              {!item.result && <span className="tool-running">running…</span>}
+              {!item.result ? (
+                <span className="ml-auto animate-pulse text-[11px] text-sky-400">running…</span>
+              ) : (
+                <span className="ml-auto text-slate-600 transition-transform group-open:rotate-90">▸</span>
+              )}
             </summary>
-            {item.args !== undefined && <pre className="tool-detail">{JSON.stringify(item.args, null, 2)}</pre>}
-            {item.result && <pre className="tool-detail tool-result">{item.result}</pre>}
+            <div className="border-t border-slate-800">
+              {item.args !== undefined && (
+                <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-slate-500">
+                  {JSON.stringify(item.args, null, 2)}
+                </pre>
+              )}
+              {item.result && (
+                <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-dashed border-slate-800 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
+                  {item.result}
+                </pre>
+              )}
+            </div>
           </details>
         </div>
       );
     case 'error':
       return (
-        <div className="msg error">
-          <strong>error:</strong> {item.message}
+        <div className="self-start">
+          <div className="max-w-[85%] rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-300">
+            <strong>error:</strong> {item.message}
+          </div>
         </div>
       );
   }
-}
-
-function formatArgs(args: unknown): string {
-  const s = typeof args === 'string' ? args : JSON.stringify(args);
-  return s.length > 80 ? `${s.slice(0, 80)}…` : s;
 }
