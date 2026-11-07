@@ -1,6 +1,7 @@
 import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { TOOLS, runTool } from './tools';
+import { providerClient, type ProviderCreds } from './providers';
 
 /** One OpenAI-style tool call (serialized form, safe for DB storage). */
 export interface StoredToolCall {
@@ -30,39 +31,7 @@ const MAX_STEPS = 12;
 const SYSTEM_PROMPT = (workspace: string) =>
   `You are a local AI agent. Your working directory is ${workspace}. You can run shell commands and read/write files inside it (and its subdirectories) — that is the only place you may write. Use tools to actually do the work; never claim to have done something you did not. Be concise in your final answer.`;
 
-let client: OpenAI | undefined;
-function getClient(): OpenAI {
-  if (!client) {
-    client = new OpenAI({
-      apiKey: process.env.OPENAI_API_KEY ?? 'unset',
-      baseURL: process.env.OPENAI_BASE_URL || undefined,
-    });
-  }
-  return client;
-}
-
 export const DEFAULT_MODEL = () => process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
-
-/** Fetch the backend's model list; falls back to a static list when unavailable. */
-export async function listModels(): Promise<string[]> {
-  try {
-    const res = await getClient().models.list();
-    const names = res.data.map((m) => m.id).sort();
-    if (names.length > 0) return names;
-  } catch {
-    /* fall through */
-  }
-  return [
-    'gpt-4o',
-    'gpt-4o-mini',
-    'gpt-4.1',
-    'gpt-4.1-mini',
-    'gpt-4.1-nano',
-    'claude-sonnet-4-5',
-    'llama3.1:8b',
-    'qwen2.5-coder:7b',
-  ];
-}
 
 /**
  * Run one full agent turn: LLM -> tool calls -> LLM -> ... until it replies
@@ -72,6 +41,7 @@ export async function* runAgentTurn(opts: {
   messages: LlmMessage[];
   workspace: string;
   model?: string; // '' or undefined -> server default
+  provider: ProviderCreds;
   signal?: AbortSignal;
 }): AsyncGenerator<AgentEvent> {
   const conversation: LlmMessage[] = [
@@ -79,9 +49,10 @@ export async function* runAgentTurn(opts: {
     ...opts.messages,
   ];
   const model = opts.model?.trim() || DEFAULT_MODEL();
+  const client = providerClient(opts.provider);
 
   for (let step = 0; step < MAX_STEPS; step++) {
-    const stream = await getClient().chat.completions.create(
+    const stream = await client.chat.completions.create(
       {
         model,
         messages: conversation as unknown as ChatCompletionMessageParam[],

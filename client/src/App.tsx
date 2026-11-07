@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import ReactMarkdown from 'react-markdown';
-import { api, streamTurn, type DirsResponse, type MessageRow, type Project, type Session } from './api';
+import { api, streamTurn, type DirsResponse, type MessageRow, type Project, type Provider, type Session } from './api';
 
 type Item =
   | { kind: 'user'; content: string }
@@ -55,6 +55,8 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [dialog, setDialog] = useState<ProjectDialog>(null);
+  const [providers, setProviders] = useState<Provider[]>([]);
+  const [providersOpen, setProvidersOpen] = useState(false);
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const streamedRef = useRef(false);
@@ -65,6 +67,10 @@ export default function App() {
     setProjects(await api.listProjects());
   }, []);
 
+  const refreshProviders = useCallback(async () => {
+    setProviders(await api.listProviders());
+  }, []);
+
   const refreshSessions = useCallback(async (projectId: string) => {
     setSessions(await api.listSessions(projectId));
   }, []);
@@ -72,6 +78,7 @@ export default function App() {
   // On first load: fetch projects, activate the first one (or open the dialog).
   useEffect(() => {
     (async () => {
+      refreshProviders().catch(() => {});
       try {
         const list = await api.listProjects();
         setProjects(list);
@@ -284,6 +291,24 @@ export default function App() {
       <main className="flex min-w-0 flex-1 flex-col">
         {/* project tabs */}
         <header className="flex items-center gap-1 border-b border-slate-800 px-3 py-2">
+          <button
+            onClick={() => {
+              setProvidersOpen((v) => !v);
+              setDialog(null);
+            }}
+            title="Providers"
+            className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors ${
+              providersOpen
+                ? 'bg-slate-800 text-slate-100'
+                : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
+            }`}
+          >
+            <span>🔌</span>
+            {providers.some((p) => p.models_error) && (
+              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" title="a provider failed model detection" />
+            )}
+          </button>
+          <div className="mx-1 h-5 w-px shrink-0 bg-slate-800" />
           <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
             {projects.map((p) => (
               <button
@@ -328,9 +353,18 @@ export default function App() {
           )}
         </header>
 
+        {providersOpen && (
+          <ProvidersPanel
+            providers={providers}
+            onClose={() => setProvidersOpen(false)}
+            onChanged={refreshProviders}
+          />
+        )}
+
         {dialog && (
           <ProjectDialog
             dialog={dialog}
+            providers={providers}
             onClose={() => setDialog(null)}
             onCreated={async (p) => {
               await refreshProjects();
@@ -449,12 +483,14 @@ export default function App() {
 
 function ProjectDialog({
   dialog,
+  providers,
   onClose,
   onCreated,
   onUpdated,
   onDeleted,
 }: {
   dialog: Exclude<ProjectDialog, null>;
+  providers: Provider[];
   onClose: () => void;
   onCreated: (p: Project) => void;
   onUpdated: () => void;
@@ -463,20 +499,18 @@ function ProjectDialog({
   const editing = dialog.mode === 'edit' ? dialog.project : null;
   const [name, setName] = useState(editing?.name ?? '');
   const [cwd, setCwd] = useState(editing?.cwd ?? '');
+  const [providerId, setProviderId] = useState(editing?.provider_id ?? '');
   const [model, setModel] = useState(editing?.model ?? '');
-  const [models, setModels] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const [browsing, setBrowsing] = useState(false);
   const [dirs, setDirs] = useState<DirsResponse | null>(null);
 
-  useEffect(() => {
-    api
-      .listModels()
-      .then((r) => setModels(r.models))
-      .catch(() => setModels([]));
-  }, []);
+  // Models for the datalist: the chosen provider's, or the default provider's.
+  const selectedProvider =
+    providers.find((p) => p.id === providerId) ?? providers.find((p) => p.is_default);
+  const defaultProviderName = providers.find((p) => p.is_default)?.name ?? 'default';
 
   const browseTo = useCallback(async (p?: string) => {
     try {
@@ -494,6 +528,7 @@ function ProjectDialog({
       const payload = {
         name: name.trim() || undefined,
         cwd: cwd.trim(),
+        providerId,
         model: model.trim(),
       };
       if (editing) {
@@ -555,6 +590,23 @@ function ProjectDialog({
       </div>
 
       <div className="flex flex-col gap-1.5">
+        <label className="text-[11px] uppercase tracking-wider text-slate-500">Provider</label>
+        <select
+          value={providerId}
+          onChange={(e) => setProviderId(e.target.value)}
+          className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 outline-none focus:border-sky-500"
+        >
+          <option value="">default ({defaultProviderName})</option>
+          {providers.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name}
+              {p.is_default ? ' ★' : ''}
+            </option>
+          ))}
+        </select>
+      </div>
+
+      <div className="flex flex-col gap-1.5">
         <label className="text-[11px] uppercase tracking-wider text-slate-500">Preferred model</label>
         <input
           list="project-model-options"
@@ -565,7 +617,7 @@ function ProjectDialog({
           className={inputCls}
         />
         <datalist id="project-model-options">
-          {models.map((m) => (
+          {(selectedProvider?.models ?? []).map((m) => (
             <option key={m} value={m} />
           ))}
         </datalist>
@@ -637,6 +689,257 @@ function ProjectDialog({
           </button>
         </div>
       </div>
+    </div>
+  );
+}
+
+/* ---------- providers panel ---------- */
+
+function ProvidersPanel({
+  providers,
+  onClose,
+  onChanged,
+}: {
+  providers: Provider[];
+  onClose: () => void;
+  onChanged: () => Promise<void>;
+}) {
+  const [editing, setEditing] = useState<Provider | 'new' | null>(null);
+  const [formName, setFormName] = useState('');
+  const [formUrl, setFormUrl] = useState('');
+  const [formKey, setFormKey] = useState('');
+  const [formDefault, setFormDefault] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [detecting, setDetecting] = useState<string | null>(null);
+
+  const openNew = () => {
+    setFormName('');
+    setFormUrl('');
+    setFormKey('');
+    setFormDefault(providers.length === 0);
+    setError(null);
+    setEditing('new');
+  };
+  const openEdit = (p: Provider) => {
+    setFormName(p.name);
+    setFormUrl(p.base_url);
+    setFormKey(p.api_key);
+    setFormDefault(p.is_default);
+    setError(null);
+    setEditing(p);
+  };
+
+  const save = async () => {
+    if (!formName.trim()) {
+      setError('name is required');
+      return;
+    }
+    setBusy(true);
+    setError(null);
+    const payload = {
+      name: formName,
+      baseUrl: formUrl,
+      apiKey: formKey,
+      isDefault: formDefault,
+    };
+    try {
+      if (editing === 'new') await api.createProvider(payload);
+      else if (editing) await api.updateProvider(editing.id, payload);
+      await onChanged();
+      setEditing(null);
+    } catch (err) {
+      setError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const detect = async (id: string) => {
+    setDetecting(id);
+    setError(null);
+    try {
+      await api.detectProvider(id);
+      await onChanged();
+    } catch (err) {
+      setError(String(err instanceof Error ? err.message : err));
+    } finally {
+      setDetecting(null);
+    }
+  };
+
+  const remove = async (p: Provider) => {
+    if (p.used_by > 0) return;
+    if (!window.confirm(`Delete provider "${p.name}"?`)) return;
+    try {
+      await api.deleteProvider(p.id);
+      await onChanged();
+    } catch (err) {
+      setError(String(err instanceof Error ? err.message : err));
+    }
+  };
+
+  const inputCls =
+    'rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-sky-500';
+
+  return (
+    <div className="flex max-h-[65%] flex-col gap-3 overflow-y-auto border-b border-slate-800 bg-slate-900/70 px-5 py-4">
+      <div className="flex items-center gap-2">
+        <h2 className="text-sm font-semibold text-slate-200">Providers</h2>
+        <button
+          onClick={openNew}
+          className="ml-auto rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sky-400"
+        >
+          New provider
+        </button>
+        <button
+          onClick={onClose}
+          className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-800"
+        >
+          Close
+        </button>
+      </div>
+
+      {providers.length === 0 && (
+        <p className="text-xs text-slate-500">
+          No providers yet. Add one with a base URL + API key, or use the imported default.
+        </p>
+      )}
+
+      <ul className="flex flex-col gap-1.5">
+        {providers.map((p) => (
+          <li
+            key={p.id}
+            className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2"
+          >
+            <div className="min-w-0 flex-1">
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-medium text-slate-200">{p.name}</span>
+                {p.is_default && (
+                  <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-1.5 text-[9px] font-semibold uppercase tracking-wider text-sky-300">
+                    default
+                  </span>
+                )}
+              </div>
+              <div className="truncate font-mono text-[10px] text-slate-500">
+                {p.base_url || 'api.openai.com (official)'}
+              </div>
+            </div>
+            <div className="w-40 shrink-0 text-right text-[11px]">
+              {p.models_error ? (
+                <span className="text-amber-400" title={p.models_error}>
+                  ⚠ detection failed
+                </span>
+              ) : p.models_checked_at ? (
+                <span className="text-slate-500">
+                  {p.models.length} models · {p.models_checked_at.slice(11, 16)}
+                </span>
+              ) : (
+                <span className="text-slate-600">not checked</span>
+              )}
+            </div>
+            <button
+              onClick={() => void detect(p.id)}
+              disabled={detecting === p.id}
+              title="Re-detect models"
+              className="rounded-lg p-1.5 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-sky-400 disabled:opacity-50"
+            >
+              {detecting === p.id ? <span className="inline-block animate-spin">↻</span> : '↻'}
+            </button>
+            <button
+              onClick={() => openEdit(p)}
+              title="Edit provider"
+              className="rounded-lg p-1.5 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-sky-400"
+            >
+              ⚙
+            </button>
+            <button
+              onClick={() => void remove(p)}
+              disabled={p.used_by > 0}
+              title={p.used_by > 0 ? `used by ${p.used_by} project(s)` : 'Delete provider'}
+              className="rounded-lg p-1.5 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-rose-400 disabled:cursor-default disabled:opacity-30"
+            >
+              🗑
+            </button>
+          </li>
+        ))}
+      </ul>
+
+      {editing !== null && (
+        <div className="flex flex-col gap-2.5 rounded-xl border border-slate-800 bg-slate-950 p-3">
+          <h3 className="text-xs font-semibold text-slate-300">
+            {editing === 'new' ? 'New provider' : `Edit: ${editing.name}`}
+          </h3>
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500">Name</label>
+              <input
+                value={formName}
+                onChange={(e) => setFormName(e.target.value)}
+                placeholder="OpenAI"
+                spellCheck={false}
+                className={inputCls}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500">
+                Base URL
+              </label>
+              <input
+                value={formUrl}
+                onChange={(e) => setFormUrl(e.target.value)}
+                placeholder="blank = api.openai.com/v1"
+                spellCheck={false}
+                className={inputCls}
+              />
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500">
+                API key
+              </label>
+              <input
+                type="password"
+                value={formKey}
+                onChange={(e) => setFormKey(e.target.value)}
+                placeholder="sk-…"
+                spellCheck={false}
+                className={inputCls}
+              />
+            </div>
+            <div className="flex items-end gap-2 pb-2">
+              <label className="flex items-center gap-2 text-xs text-slate-400">
+                <input
+                  type="checkbox"
+                  checked={formDefault}
+                  onChange={(e) => setFormDefault(e.target.checked)}
+                  className="accent-sky-500"
+                />
+                default provider
+              </label>
+            </div>
+          </div>
+          <p className="text-[11px] text-slate-600">
+            Models are detected from the provider on save (and via ↻). A failed detection keeps
+            the provider usable — type model names freely in project settings.
+          </p>
+          {error && <p className="text-xs text-rose-400">{error}</p>}
+          <div className="flex gap-2">
+            <button
+              onClick={() => setEditing(null)}
+              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-800"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={() => void save()}
+              disabled={busy}
+              className="rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-50"
+            >
+              {busy ? 'Saving + detecting…' : 'Save provider'}
+            </button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

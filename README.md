@@ -10,7 +10,8 @@ to a workspace directory).
 - **Server**: Node.js + Fastify, SSE streaming, `better-sqlite3` (in-memory DB for sessions/messages)
 - **Client**: React + Vite, styled with Tailwind CSS v4 (assistant messages rendered as markdown)
 - **Agent**: any OpenAI-compatible chat API with tool calling (OpenAI, OpenRouter, Ollama, …)
-- **Projects**: each project defines a working directory and preferred model (server defaults when left blank); sessions live under a project
+- **Providers**: OpenAI-compatible endpoints (name, base URL, API key) with automatic model detection; keys are stored in the (in-memory) DB
+- **Projects**: each project picks a working directory, provider and preferred model (server defaults when left blank); sessions live under a project
 - No auth — intended for local use only
 
 ## Quick start
@@ -31,6 +32,22 @@ npm run build   # builds client/dist
 npm start       # Fastify serves the API + the built client on :3001
 ```
 
+## Providers
+
+Providers are OpenAI-compatible endpoints, managed via the 🔌 button in the header:
+
+- **Fields**: name, base URL (blank = `api.openai.com`), API key, and a *default provider*
+  flag (projects without an explicit provider use it).
+- **Model detection**: on create/update the server calls the provider's `/v1/models`
+  and stores the list. A failed detection (bad key, offline) is stored as an error — the
+  provider stays usable, a ⚠ badge appears, and model names can always be typed freely.
+  Re-run detection with ↻.
+- **First run**: the `.env` `OPENAI_API_KEY`/`OPENAI_BASE_URL` are auto-imported as the
+  built-in `default` provider (models detected asynchronously after startup).
+- **Keys** are stored in the in-memory DB and masked (`•••`) in API responses; editing a
+  provider with the masked key leaves it unchanged.
+- **Delete protection**: a provider in use by projects cannot be deleted (HTTP 409).
+
 ## Projects
 
 The top level of the UI is the **project**, shown as a tab in the header:
@@ -48,20 +65,22 @@ The top level of the UI is the **project**, shown as a tab in the header:
 
 | Variable | Default | Description |
 |---|---|---|
-| `OPENAI_API_KEY` | – | API key for the chat backend |
-| `OPENAI_BASE_URL` | OpenAI | Any OpenAI-compatible endpoint (e.g. `http://localhost:11434/v1` for Ollama) |
-| `OPENAI_MODEL` | `gpt-4o-mini` | Model id passed to the backend |
+| `OPENAI_API_KEY` | – | Imported as the built-in **default provider** on first run (when no providers exist) |
+| `OPENAI_BASE_URL` | OpenAI | Base URL for the imported default provider (e.g. `http://localhost:11434/v1` for Ollama) |
+| `OPENAI_MODEL` | `gpt-4o-mini` | Model id used when a project leaves its model blank |
 | `AGENT_WORKSPACE_DIR` | `./workspace` (relative to server cwd) | Sandbox dir for the agent's shell/file tools |
 | `PORT` | `3001` | API port |
+
+After first run, providers (and their keys/URLs) live in the DB and are managed in the UI — the env values are only read once to seed the default provider.
 
 ## How it works
 
 ```
 Browser (React)
-   │  project tabs → sessions under the active project
+   │  provider panel (🔌) · project tabs → sessions under the active project
    │  POST /api/sessions/:id/messages
    ▼
-Fastify ──▶ Agent loop (server/src/agent.ts)  [cwd + model from the session's project]
+Fastify ──▶ Agent loop (server/src/agent.ts)  [cwd + provider + model from the session's project]
    │            │  stream: LLM → tool calls → run tools → LLM → … (max 12 steps)
    │            ▼
    │        Tools (server/src/tools.ts): bash, read_file, write_file, list_dir
@@ -82,17 +101,21 @@ server restarts. Swap `new Database(':memory:')` in `server/src/db.ts` for
 ## API
 
 - `GET /api/health`
+- `GET /api/providers` — list providers (models parsed, key masked, `used_by` count)
+- `POST /api/providers` — create `{ name, baseUrl?, apiKey?, isDefault? }` + detect models
+- `PATCH /api/providers/:id` — update; re-detects models when URL/key change
+- `POST /api/providers/:id/detect` — re-run model detection
+- `DELETE /api/providers/:id` — delete (409 while used by projects)
 - `GET /api/projects` — list projects
-- `POST /api/projects` — create project `{ name?, cwd?, model? }` (blank cwd/model = server default)
-- `PATCH /api/projects/:id` — update `{ name?, cwd?, model? }`
+- `POST /api/projects` — create project `{ name?, cwd?, providerId?, model? }` (blank fields = defaults)
+- `PATCH /api/projects/:id` — update `{ name?, cwd?, providerId?, model? }`
 - `DELETE /api/projects/:id` — delete project and all its sessions
 - `GET /api/sessions?projectId=<id>` — sessions of a project
 - `POST /api/sessions` — create session `{ projectId, title? }`
 - `DELETE /api/sessions/:id`
 - `GET /api/sessions/:id` — session + full message history
-- `GET /api/models` — model ids from the backend (static fallback list)
 - `GET /api/dirs?path=/abs/path` — directory browser data `{ path, parent, dirs[] }`
-- `POST /api/sessions/:id/messages` — `{ content }`, responds with an SSE stream (uses the project's cwd + model)
+- `POST /api/sessions/:id/messages` — `{ content }`, responds with an SSE stream (uses the project's cwd, provider and model)
 
 ## Project layout
 

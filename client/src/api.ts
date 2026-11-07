@@ -1,7 +1,28 @@
+export interface Provider {
+  id: string;
+  name: string;
+  base_url: string; // '' = OpenAI official endpoint
+  api_key: string; // masked ('•••') when set
+  is_default: boolean;
+  models: string[]; // detected model ids
+  models_error: string; // '' = detection ok
+  models_checked_at: string | null;
+  used_by: number; // projects using this provider
+  created_at: string;
+}
+
+export interface ProviderInput {
+  name?: string;
+  baseUrl?: string;
+  apiKey?: string;
+  isDefault?: boolean;
+}
+
 export interface Project {
   id: string;
   name: string;
   cwd: string; // '' = server default (AGENT_WORKSPACE_DIR)
+  provider_id: string; // '' = default provider
   model: string; // '' = server default (OPENAI_MODEL)
   created_at: string;
 }
@@ -51,10 +72,29 @@ async function json<T>(res: Response): Promise<T> {
 export interface ProjectInput {
   name?: string;
   cwd?: string;
+  providerId?: string;
   model?: string;
 }
 
 export const api = {
+  listProviders: () => fetch('/api/providers').then((r) => json<Provider[]>(r)),
+  createProvider: (input: ProviderInput) =>
+    fetch('/api/providers', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(input),
+    }).then((r) => json<Provider>(r)),
+  updateProvider: (id: string, patch: ProviderInput) =>
+    fetch(`/api/providers/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }).then((r) => json<Provider>(r)),
+  deleteProvider: (id: string) =>
+    fetch(`/api/providers/${id}`, { method: 'DELETE' }).then((r) => json<void>(r)),
+  detectProvider: (id: string) =>
+    fetch(`/api/providers/${id}/detect`, { method: 'POST' }).then((r) => json<Provider>(r)),
+
   listProjects: () => fetch('/api/projects').then((r) => json<Project[]>(r)),
   createProject: (input: ProjectInput) =>
     fetch('/api/projects', {
@@ -82,7 +122,6 @@ export const api = {
   deleteSession: (id: string) => fetch(`/api/sessions/${id}`, { method: 'DELETE' }).then((r) => json<void>(r)),
   getSession: (id: string) =>
     fetch(`/api/sessions/${id}`).then((r) => json<{ session: Session; messages: MessageRow[] }>(r)),
-  listModels: () => fetch('/api/models').then((r) => json<{ models: string[] }>(r)),
   listDirs: (p?: string) =>
     fetch(`/api/dirs${p ? `?path=${encodeURIComponent(p)}` : ''}`).then((r) => json<DirsResponse>(r)),
 };
