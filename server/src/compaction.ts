@@ -6,7 +6,8 @@ import { providerClient, type ProviderCreds } from './providers';
 /**
  * Context compaction, modeled on the pi coding agent's approach:
  *
- * - Trigger: estimated context tokens exceed CONTEXT_WINDOW - RESERVE_TOKENS.
+ * - Trigger: estimated context tokens exceed the model's context window
+ *   (provider config, else env/default) minus RESERVE_TOKENS.
  * - Cut point: walk backwards from the end keeping ~KEEP_RECENT_TOKENS verbatim,
  *   never orphaning a tool result from its assistant tool_calls.
  * - The old span is serialized to flat text (tool results truncated) so the
@@ -19,12 +20,18 @@ import { providerClient, type ProviderCreds } from './providers';
  *   seq > firstKeptSeq.
  */
 
-// Settings (env-overridable; the window is a guess per model until we detect it).
-export const CONTEXT_WINDOW = Number(process.env.COMPACT_CONTEXT_WINDOW ?? 128_000);
+// Settings (env-overridable). The context window is per-model: when the
+// provider config knows the model's window it wins; otherwise the env
+// value / default below is used.
+export const DEFAULT_CONTEXT_WINDOW = Number(process.env.COMPACT_CONTEXT_WINDOW ?? 128_000);
 export const RESERVE_TOKENS = Number(process.env.COMPACT_RESERVE_TOKENS ?? 16_384);
 export const KEEP_RECENT_TOKENS = Number(process.env.COMPACT_KEEP_RECENT_TOKENS ?? 20_000);
+
 /** Compaction starts when the estimated context exceeds this many tokens. */
-export const COMPACT_THRESHOLD = Math.max(0, CONTEXT_WINDOW - RESERVE_TOKENS);
+export function compactionThreshold(contextWindow?: number): number {
+  const window = contextWindow && contextWindow > 0 ? contextWindow : DEFAULT_CONTEXT_WINDOW;
+  return Math.max(0, window - RESERVE_TOKENS);
+}
 
 const TOOL_RESULT_SERIALIZED_LIMIT = 2000;
 const TOOL_ARGS_SERIALIZED_LIMIT = 400;

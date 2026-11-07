@@ -19,10 +19,44 @@ export interface ProviderRow {
   base_url: string; // '' = OpenAI official endpoint
   api_key: string;
   is_default: number; // 0 | 1
-  models: string; // JSON string[] of detected model ids
+  models: string; // JSON ProviderModel[] (legacy: string[]) of detected models
   models_error: string; // last detection error ('' = ok)
   models_checked_at: string | null;
   created_at: string;
+}
+
+/** A detected model plus its configured context window (tokens, optional). */
+export interface ProviderModel {
+  id: string;
+  /** Context window in tokens; unset = unknown (compaction falls back to env/default). */
+  contextWindow?: number;
+}
+
+/**
+ * Parse the providers.models column. Tolerates the legacy plain string[]
+ * shape; drops entries without a usable id, keeps contextWindow only when
+ * it is a positive number.
+ */
+export function parseProviderModels(json: string): ProviderModel[] {
+  let raw: unknown;
+  try {
+    raw = JSON.parse(json);
+  } catch {
+    return [];
+  }
+  if (!Array.isArray(raw)) return [];
+  const out: ProviderModel[] = [];
+  for (const e of raw) {
+    if (typeof e === 'string' && e.trim()) out.push({ id: e });
+    else if (e && typeof e === 'object' && typeof (e as { id?: unknown }).id === 'string' && (e as { id: string }).id.trim()) {
+      const m = e as { id: string; contextWindow?: unknown };
+      const cw = typeof m.contextWindow === 'number' && Number.isFinite(m.contextWindow) && m.contextWindow > 0
+        ? Math.round(m.contextWindow)
+        : undefined;
+      out.push(cw === undefined ? { id: m.id } : { id: m.id, contextWindow: cw });
+    }
+  }
+  return out;
 }
 
 export interface SessionRow {
@@ -209,11 +243,39 @@ export function setProviderModels(
   id: string,
   result: { models: string[]; error: string }
 ): void {
+  // Keep user-configured context windows for models that are still detected.
+  const existing = new Map(parseProviderModels((selectProvider.get(id) as ProviderRow | undefined)?.models ?? '[]').map((m) => [m.id, m.contextWindow]));
+  const models: ProviderModel[] = result.models.map((mid) => {
+    const cw = existing.get(mid);
+    return cw === undefined ? { id: mid } : { id: mid, contextWindow: cw };
+  });
   db.prepare('UPDATE providers SET models = ?, models_error = ?, models_checked_at = datetime(\'now\') WHERE id = ?').run(
-    JSON.stringify(result.models),
+    JSON.stringify(models),
     result.error,
     id
   );
+}
+
+/**
+ * Update per-model context windows. `windows` maps model id -> tokens
+ * (null/undefined = clear). Returns the updated model list, or undefined
+ * when the provider no longer exists.
+ */
+export function setModelContextWindows(
+  id: string,
+  windows: Record<string, number | null | undefined>
+): ProviderModel[] | undefined {
+  const row = selectProvider.get(id) as ProviderRow | undefined;
+  if (!row) return undefined;
+  const models = parseProviderModels(row.models).map((m) => {
+    const w = windows[m.id];
+    if (w === undefined) return m; // not mentioned in this call: leave as is
+    if (w === null) return { id: m.id };
+    const cw = Number.isFinite(w) && w > 0 ? Math.round(w) : undefined;
+    return cw === undefined ? { id: m.id } : { id: m.id, contextWindow: cw };
+  });
+  db.prepare('UPDATE providers SET models = ? WHERE id = ?').run(JSON.stringify(models), id);
+  return models;
 }
 
 /* ---------- sessions ---------- */

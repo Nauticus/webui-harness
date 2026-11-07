@@ -3,7 +3,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { TOOLS, runTool } from './tools';
 import { providerClient, type ProviderCreds } from './providers';
 import {
-  COMPACT_THRESHOLD,
+  compactionThreshold,
   compactMessages,
   estimateTokens,
   summaryAsMessage,
@@ -78,6 +78,8 @@ export async function* runAgentTurn(opts: {
   workspace: string;
   model?: string; // '' or undefined -> server default
   provider: ProviderCreds;
+  /** The model's context window in tokens (provider config); unknown -> env/default. */
+  contextWindow?: number;
   signal?: AbortSignal;
 }): AsyncGenerator<AgentEvent> {
   const conversation: CompactableMessage[] = [
@@ -123,7 +125,7 @@ export async function* runAgentTurn(opts: {
 
     // Mid-turn compaction: tool results are the usual context growth; check
     // after each tool round, before the next LLM call.
-    if (!atGuard && step > 0 && estimateTokens(conversation.slice(1)) > COMPACT_THRESHOLD) {
+    if (!atGuard && step > 0 && estimateTokens(conversation.slice(1)) > compactionThreshold(opts.contextWindow)) {
       const c = await compactInPlace('mid-turn');
       if (c) yield c;
     }

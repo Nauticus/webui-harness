@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { api, type Provider } from '../../api';
+import { api, type Provider, type ProviderInput } from '../../api';
 import { Panel } from './Panel';
 
 const INPUT_CLS =
@@ -19,6 +19,7 @@ export function ProvidersPanel({
   const [formUrl, setFormUrl] = useState('');
   const [formKey, setFormKey] = useState('');
   const [formDefault, setFormDefault] = useState(false);
+  const [formContextWindows, setFormContextWindows] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [detecting, setDetecting] = useState<string | null>(null);
@@ -28,6 +29,7 @@ export function ProvidersPanel({
     setFormUrl('');
     setFormKey('');
     setFormDefault(providers.length === 0);
+    setFormContextWindows({});
     setError(null);
     setEditing('new');
   };
@@ -36,6 +38,9 @@ export function ProvidersPanel({
     setFormUrl(p.base_url);
     setFormKey(p.api_key);
     setFormDefault(p.is_default);
+    setFormContextWindows(
+      Object.fromEntries(p.models.map((m) => [m.id, m.contextWindow !== undefined ? String(m.contextWindow) : '']))
+    );
     setError(null);
     setEditing(p);
   };
@@ -45,14 +50,33 @@ export function ProvidersPanel({
       setError('name is required');
       return;
     }
+    for (const [id, v] of Object.entries(formContextWindows)) {
+      if (v.trim() === '') continue;
+      const n = Number(v);
+      if (!Number.isInteger(n) || n <= 0) {
+        setError(`invalid context window for ${id} — positive integer tokens, or blank`);
+        return;
+      }
+    }
     setBusy(true);
     setError(null);
-    const payload = {
+    const payload: ProviderInput = {
       name: formName,
       baseUrl: formUrl,
       apiKey: formKey,
       isDefault: formDefault,
     };
+    // Only send per-model context windows that actually changed.
+    if (editing && editing !== 'new') {
+      const windows: Record<string, number | null> = {};
+      for (const m of editing.models) {
+        const v = (formContextWindows[m.id] ?? '').trim();
+        const next = v === '' ? null : Number(v);
+        if ((m.contextWindow ?? null) === next) continue;
+        windows[m.id] = next;
+      }
+      if (Object.keys(windows).length > 0) payload.modelContextWindows = windows;
+    }
     try {
       if (editing === 'new') await api.createProvider(payload);
       else if (editing) await api.updateProvider(editing.id, payload);
@@ -229,6 +253,31 @@ export function ProvidersPanel({
             Models are detected from the provider on save (and via ↻). A failed detection keeps
             the provider usable — type model names freely in project settings.
           </p>
+          {editing !== 'new' && editing && editing.models.length > 0 && (
+            <div className="flex flex-col gap-1.5">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500">
+                Context window per model <span className="normal-case">(tokens, optional)</span>
+              </label>
+              <p className="-mt-1 text-[11px] text-slate-600">
+                Used to decide when the chat context gets compacted. Blank = server default.
+              </p>
+              <div className="flex max-h-44 flex-col gap-1 overflow-auto rounded-lg border border-slate-800 p-2">
+                {editing.models.map((m) => (
+                  <div key={m.id} className="flex items-center gap-2">
+                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-slate-300">{m.id}</span>
+                    <input
+                      value={formContextWindows[m.id] ?? ''}
+                      onChange={(e) => setFormContextWindows((prev) => ({ ...prev, [m.id]: e.target.value }))}
+                      placeholder="e.g. 128000"
+                      inputMode="numeric"
+                      spellCheck={false}
+                      className="w-28 shrink-0 rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-right font-mono text-[11px] text-slate-200 outline-none placeholder:text-slate-600 focus:border-sky-500"
+                    />
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
           {error && <p className="text-xs text-rose-400">{error}</p>}
           <div className="flex gap-2">
             <button

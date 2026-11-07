@@ -7,6 +7,9 @@ import {
   summaryAsMessage,
   firstKeptSeqOf,
   toLlmMessages,
+  compactionThreshold,
+  RESERVE_TOKENS,
+  DEFAULT_CONTEXT_WINDOW,
   KEEP_RECENT_TOKENS,
   type CompactableMessage,
 } from '../src/compaction';
@@ -26,6 +29,15 @@ const toolMsg = (id: string, name: string, output: string, seq?: number): Compac
   name,
   content: output,
   ...(seq !== undefined ? { seq } : {}),
+});
+
+test('compactionThreshold: per-model window wins, else env/default fallback', () => {
+  // Clamped at 0: a window smaller than the reserve always compacts.
+  assert.equal(compactionThreshold(5000), Math.max(0, 5000 - RESERVE_TOKENS));
+  assert.equal(compactionThreshold(200_000), 200_000 - RESERVE_TOKENS);
+  assert.equal(compactionThreshold(undefined), DEFAULT_CONTEXT_WINDOW - RESERVE_TOKENS);
+  assert.equal(compactionThreshold(0), DEFAULT_CONTEXT_WINDOW - RESERVE_TOKENS);
+  assert.equal(compactionThreshold(-1), DEFAULT_CONTEXT_WINDOW - RESERVE_TOKENS);
 });
 
 test('estimateTokens scales roughly with content size', () => {

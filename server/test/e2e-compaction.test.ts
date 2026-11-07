@@ -167,7 +167,10 @@ test.before(async () => {
       ...process.env,
       PORT: String(APP_PORT),
       WEBLISAN_DATA_DIR: dataDir,
-      COMPACT_CONTEXT_WINDOW: '5000',
+      // The env window is deliberately huge: compaction in this test must
+      // come from the per-model context window configured on the provider,
+      // not from the env fallback.
+      COMPACT_CONTEXT_WINDOW: '100000',
       COMPACT_RESERVE_TOKENS: '2000',
       COMPACT_KEEP_RECENT_TOKENS: '1000',
     },
@@ -201,6 +204,27 @@ test('e2e: normal turn, pre-turn compaction, mid-turn compaction, overflow recov
   // Setup: provider + project + session.
   const prov = await post('/api/providers', { name: 'mock', baseUrl: MOCK_BASE, apiKey: 'k', isDefault: true });
   assert.equal(prov.status, 201);
+  const provId = (await prov.json()).id as string;
+
+  await t.test('per-model context window round-trips through the provider API', async () => {
+    const patch = await fetch(`${APP_BASE}/api/providers/${provId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelContextWindows: { 'mock-model-1': 5000 } }),
+    });
+    assert.equal(patch.status, 200);
+    const providers = await fetch(`${APP_BASE}/api/providers`).then((r) => r.json() as { models: { id: string; contextWindow?: number }[] }[]);
+    const model = providers.find((p) => p.id === provId)!.models.find((m) => m.id === 'mock-model-1');
+    assert.equal(model?.contextWindow, 5000);
+    // Invalid values are rejected.
+    const bad = await fetch(`${APP_BASE}/api/providers/${provId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ modelContextWindows: { 'mock-model-1': -1 } }),
+    });
+    assert.equal(bad.status, 400);
+  });
+
   const proj = await post('/api/projects', { name: 'e2e', cwd: workspace });
   assert.equal(proj.status, 201);
   const sess = await post('/api/sessions', { projectId: (await proj.json()).id });

@@ -9,7 +9,7 @@ import * as db from './db';
 import * as history from './history';
 import { runAgentTurn, type StoredToolCall, DEFAULT_MODEL } from './agent';
 import {
-  COMPACT_THRESHOLD,
+  compactionThreshold,
   compactMessages,
   estimateTokens,
   summaryAsMessage,
@@ -81,12 +81,12 @@ function validateProviderId(providerId: unknown): string | undefined {
   return trimmed;
 }
 
-/** Public shape of a provider row: models parsed, is_default boolean, key masked. */
+/** Public shape of a provider row: models parsed (normalized), is_default boolean, key masked. */
 function publicProvider(row: db.ProviderRow): Record<string, unknown> {
   return {
     ...row,
     is_default: Boolean(row.is_default),
-    models: JSON.parse(row.models),
+    models: db.parseProviderModels(row.models),
     api_key: row.api_key ? '•••' : '',
   };
 }
@@ -135,9 +135,20 @@ app.patch('/api/providers/:id', async (req, reply) => {
     baseUrl?: string;
     apiKey?: string;
     isDefault?: boolean;
+    modelContextWindows?: Record<string, number | null>;
   };
   const current = db.getProvider(id);
   if (!current) return reply.code(404).send({ error: 'provider not found' });
+  if (body.modelContextWindows !== undefined) {
+    if (typeof body.modelContextWindows !== 'object' || body.modelContextWindows === null || Array.isArray(body.modelContextWindows)) {
+      return reply.code(400).send({ error: 'modelContextWindows must be an object' });
+    }
+    for (const [mid, w] of Object.entries(body.modelContextWindows)) {
+      if (w !== null && (typeof w !== 'number' || !Number.isFinite(w) || w <= 0)) {
+        return reply.code(400).send({ error: `modelContextWindows["${mid}"] must be a positive number or null` });
+      }
+    }
+  }
   try {
     const changedUrl = typeof body.baseUrl === 'string' && body.baseUrl.trim() !== current.base_url;
     const changedKey =
@@ -153,6 +164,9 @@ app.patch('/api/providers/:id', async (req, reply) => {
       const updated = db.getProvider(id)!;
       const detected = await detectModels({ baseUrl: updated.base_url, apiKey: updated.api_key });
       db.setProviderModels(id, detected);
+    }
+    if (body.modelContextWindows !== undefined) {
+      db.setModelContextWindows(id, body.modelContextWindows);
     }
     const provider = db.listProviders().find((p) => p.id === id);
     reply.send(publicProvider(provider!));
@@ -355,14 +369,12 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   const providerCreds = { baseUrl: provider.base_url, apiKey: provider.api_key };
 
   // Model resolution: session -> project -> provider's first detected model -> env fallback.
-  let firstDetected = '';
-  try {
-    firstDetected = (JSON.parse(provider.models) as string[])[0] ?? '';
-  } catch {
-    firstDetected = '';
-  }
+  const providerModels = db.parseProviderModels(provider.models);
+  const firstDetected = providerModels[0]?.id ?? '';
   const model =
     session.model || project.model || firstDetected || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  // The model's context window from provider config (unknown -> compaction's env/default).
+  const contextWindow = providerModels.find((m) => m.id === model)?.contextWindow;
 
   await history.appendRecord(id, session.project_id, { role: 'user', content: body.content.trim() });
   if (session.title === 'New session') {
@@ -386,7 +398,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
     let messages = toLlmMessages(historyRows);
     // Pre-turn compaction: the context may have grown past the threshold in
     // an earlier turn. Non-fatal — on failure the full context is sent.
-    if (estimateTokens(messages) > COMPACT_THRESHOLD) {
+    if (estimateTokens(messages) > compactionThreshold(contextWindow)) {
       const c = await compactMessages({ messages, provider: providerCreds, model: model || DEFAULT_MODEL() }).catch((err) => {
         app.log.warn(`pre-turn compaction failed: ${String(err)}`);
         return undefined;
@@ -401,7 +413,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
         messages = [summaryAsMessage(c.summary), ...messages.slice(c.firstKeptIndex)];
       }
     }
-    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds })) {
+    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow })) {
       send(ev);
       switch (ev.type) {
         case 'message.complete':

@@ -1,10 +1,16 @@
+/** A detected model plus its configured context window (tokens, optional). */
+export interface ProviderModel {
+  id: string;
+  contextWindow?: number;
+}
+
 export interface Provider {
   id: string;
   name: string;
   base_url: string; // '' = OpenAI official endpoint
   api_key: string; // masked ('•••') when set
   is_default: boolean;
-  models: string[]; // detected model ids
+  models: ProviderModel[]; // detected models (+ configured context windows)
   models_error: string; // '' = detection ok
   models_checked_at: string | null;
   used_by: number; // projects using this provider
@@ -16,6 +22,8 @@ export interface ProviderInput {
   baseUrl?: string;
   apiKey?: string;
   isDefault?: boolean;
+  /** Per-model context windows (tokens); null = clear. Applied on update. */
+  modelContextWindows?: Record<string, number | null>;
 }
 
 export interface Project {
