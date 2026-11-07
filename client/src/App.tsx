@@ -183,28 +183,29 @@ export default function App() {
     setInput('');
     setBusy(true);
     streamedRef.current = false;
-    setItems((prev) => [...prev, { kind: 'user', content }, { kind: 'assistant', content: '' }]);
+    // Only the user item is pre-created; thinking/assistant/tool blocks are
+    // appended as they arrive so the UI matches the server's stream order.
+    setItems((prev) => [...prev, { kind: 'user', content }]);
 
     try {
       await streamTurn(sessionId, content, (ev) => {
         switch (ev.type) {
-          case 'message.delta':
+          case 'message.delta': {
             streamedRef.current = true;
-            setItems((prev) =>
-              prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it))
-            );
             setItems((prev) => {
-              const next = [...prev];
-              for (let i = next.length - 1; i >= 0; i--) {
-                const it = next[i]!;
-                if (it.kind === 'assistant') {
-                  next[i] = { kind: 'assistant', content: it.content + String(ev.text) };
-                  break;
-                }
+              const next = prev.map((it) =>
+                it.kind === 'thinking' && !it.done ? { ...it, done: true } : it
+              );
+              const last = next[next.length - 1];
+              if (last && last.kind === 'assistant') {
+                next[next.length - 1] = { kind: 'assistant', content: last.content + String(ev.text) };
+              } else {
+                next.push({ kind: 'assistant', content: String(ev.text) });
               }
               return next;
             });
             break;
+          }
           case 'thinking.delta':
             setItems((prev) => {
               const next = [...prev];
