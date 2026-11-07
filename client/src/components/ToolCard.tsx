@@ -14,6 +14,35 @@ export function ToolCard({
 }) {
   const isError = result !== undefined && result.startsWith('error');
   const target = toolTarget(name, args);
+  const argsBlock =
+    args !== undefined ? (
+      <details className="border-t border-dashed border-slate-800">
+        <summary className="cursor-pointer select-none list-none px-3 py-1.5 text-[11px] text-slate-600 transition-colors hover:text-slate-400">
+          arguments
+        </summary>
+        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-slate-500">
+          {JSON.stringify(args, null, 2)}
+        </pre>
+      </details>
+    ) : null;
+
+  // With a diff, the change itself is the headline: always visible, no expand needed.
+  if (diff) {
+    return (
+      <div className="w-full max-w-[85%] self-start overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
+        <div className="flex items-center gap-2 px-3 py-2 text-xs text-slate-400">
+          <span className="w-4 text-center">{TOOL_ICONS[name] ?? '🔧'}</span>
+          <span className="shrink-0 font-semibold text-emerald-400">{name}</span>
+          {target && <span className="truncate font-mono text-[11px] text-slate-600">{target}</span>}
+        </div>
+        <div className="border-t border-slate-800">
+          <DiffView diff={diff} summary={result?.split('\n')[0]} />
+        </div>
+        {argsBlock}
+      </div>
+    );
+  }
+
   return (
     <div className="w-full max-w-[85%] self-start">
       <details className="group overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
@@ -33,25 +62,12 @@ export function ToolCard({
           )}
         </summary>
         <div className="border-t border-slate-800">
-          {diff ? (
-            <DiffView diff={diff} summary={result?.split('\n')[0]} />
-          ) : (
-            result && (
-              <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-slate-300">
-                {result}
-              </pre>
-            )
+          {result && (
+            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-slate-300">
+              {result}
+            </pre>
           )}
-          {args !== undefined && (
-            <details className="border-t border-dashed border-slate-800">
-              <summary className="cursor-pointer select-none list-none px-3 py-1.5 text-[11px] text-slate-600 transition-colors hover:text-slate-400">
-                arguments
-              </summary>
-              <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-slate-500">
-                {JSON.stringify(args, null, 2)}
-              </pre>
-            </details>
-          )}
+          {argsBlock}
         </div>
       </details>
     </div>

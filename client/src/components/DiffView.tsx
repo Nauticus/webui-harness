@@ -6,10 +6,12 @@ interface DiffLine {
 }
 type RenderLine = DiffLine | { kind: 'gap'; count: number };
 
+const PREVIEW_LINES = 20;
+
 /**
  * Parse a unified diff into renderable lines (+/- counts). Header/banner
- * lines ('diff --git', '---', '+++', 'Index:', '=====') are dropped, and long
- * runs of context lines are collapsed to first/last two with a "hidden" gap.
+ * lines before the first @@ hunk are dropped, and long runs of context lines
+ * are collapsed to first/last two with a "hidden" gap.
  */
 function parseUnifiedDiff(diff: string): { lines: RenderLine[]; adds: number; dels: number } {
   const raw: DiffLine[] = [];
@@ -18,8 +20,6 @@ function parseUnifiedDiff(diff: string): { lines: RenderLine[]; adds: number; de
   let inHunk = false;
   for (const l of diff.split('\n')) {
     if (!inHunk) {
-      // Everything before the first hunk header is banner/header noise
-      // ('diff --git', 'Index:', '=====', '--- a/…', '+++ b/…').
       if (l.startsWith('@@')) inHunk = true;
       else continue;
     }
@@ -57,42 +57,53 @@ const LINE_STYLES: Record<Exclude<RenderLine['kind'], 'gap'>, string> = {
   hunk: 'text-sky-400/80',
 };
 
-/** Colorized unified diff; open by default when small, collapsed when long. */
+/**
+ * Colorized unified diff that is always visible: small diffs show in full,
+ * large ones show the first PREVIEW_LINES with a "show all" toggle.
+ */
 export function DiffView({ diff, summary }: { diff: string; summary?: string }) {
   const { lines, adds, dels } = useMemo(() => parseUnifiedDiff(diff), [diff]);
-  const [open, setOpen] = useState(() => lines.length <= 60);
+  const large = lines.length > PREVIEW_LINES;
+  const [expanded, setExpanded] = useState(false);
+  const shown = large && !expanded ? lines.slice(0, PREVIEW_LINES) : lines;
   return (
     <div>
-      <button
-        onClick={() => setOpen((v) => !v)}
-        className="flex w-full items-center gap-2 px-3 py-1.5 text-left text-[11px] transition-colors hover:bg-slate-800/40"
-      >
+      <div className="flex items-center gap-2 px-3 py-1.5 text-[11px]">
         <span className="font-semibold text-emerald-400">+{adds}</span>
         <span className="font-semibold text-rose-400">−{dels}</span>
         {summary && <span className="truncate text-slate-600">{summary}</span>}
-        <span className="ml-auto shrink-0 text-slate-600">{open ? '▾' : '▸'}</span>
-      </button>
-      {open && (
-        <div className="max-h-72 overflow-auto border-t border-slate-800/60 font-mono text-[11px] leading-relaxed">
-          {lines.map((l, i) =>
-            l.kind === 'gap' ? (
-              <div key={i} className="bg-slate-800/40 px-3 py-0.5 text-center text-[10px] text-slate-600">
-                ⋯ {l.count} unchanged
-              </div>
-            ) : l.kind === 'hunk' ? (
-              <div key={i} className={`px-3 py-0.5 ${LINE_STYLES.hunk}`}>
-                {l.text}
-              </div>
-            ) : (
-              <div key={i} className={`flex ${LINE_STYLES[l.kind]}`}>
-                <span className="w-5 shrink-0 select-none text-center opacity-60">
-                  {l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' '}
-                </span>
-                <span className="whitespace-pre-wrap break-words">{l.text}</span>
-              </div>
-            )
-          )}
-        </div>
+      </div>
+      <div
+        className={`${
+          large && !expanded ? '' : 'max-h-72 overflow-auto'
+        } border-t border-slate-800/60 font-mono text-[11px] leading-relaxed`}
+      >
+        {shown.map((l, i) =>
+          l.kind === 'gap' ? (
+            <div key={i} className="bg-slate-800/40 px-3 py-0.5 text-center text-[10px] text-slate-600">
+              ⋯ {l.count} unchanged
+            </div>
+          ) : l.kind === 'hunk' ? (
+            <div key={i} className={`px-3 py-0.5 ${LINE_STYLES.hunk}`}>
+              {l.text}
+            </div>
+          ) : (
+            <div key={i} className={`flex ${LINE_STYLES[l.kind]}`}>
+              <span className="w-5 shrink-0 select-none text-center opacity-60">
+                {l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' '}
+              </span>
+              <span className="whitespace-pre-wrap break-words">{l.text}</span>
+            </div>
+          )
+        )}
+      </div>
+      {large && (
+        <button
+          onClick={() => setExpanded((v) => !v)}
+          className="flex w-full items-center justify-center gap-1.5 border-t border-slate-800/60 px-3 py-1 text-[11px] text-slate-500 transition-colors hover:text-slate-300"
+        >
+          {expanded ? '⌃ show less' : `⌄ show all ${lines.length} lines`}
+        </button>
       )}
     </div>
   );

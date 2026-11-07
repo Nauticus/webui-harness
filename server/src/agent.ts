@@ -28,7 +28,15 @@ export type AgentEvent =
   | { type: 'message.complete'; content: string; reasoning?: string }
   | { type: 'error'; message: string };
 
-const MAX_STEPS = 12;
+/**
+ * Loop guard, not a budget: a turn runs as many tool rounds as it needs
+ * until the model replies with plain text. This only fires when the model
+ * appears stuck in a tool loop (or a provider misbehaves); at that point
+ * one final tool-less wrap-up call is made so the turn ends with a summary
+ * instead of hanging forever. Context-length limits will be handled later
+ * by conversation compaction, not by capping steps.
+ */
+const LOOP_GUARD = 200;
 
 const SYSTEM_PROMPT = (workspace: string) =>
   `You are a local AI agent. Your working directory is ${workspace}. You can run shell commands and read/write files inside it (and its subdirectories) — that is the only place you may write. To modify an existing file use edit_file (targeted replacement) rather than rewriting the whole file with write_file; write_file is for new files. Use tools to actually do the work; never claim to have done something you did not. Be concise in your final answer.`;
@@ -47,7 +55,9 @@ export const DEFAULT_MODEL = () => process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 
 /**
  * Run one full agent turn: LLM -> tool calls -> LLM -> ... until it replies
- * with plain text (or the step budget runs out). Streams events as it goes.
+ * with plain text. Streams events as it goes. Only a pathological tool loop
+ * ends the turn early, and even then via a tool-less wrap-up call (see
+ * LOOP_GUARD) — there is no step budget.
  */
 export async function* runAgentTurn(opts: {
   messages: LlmMessage[];
@@ -63,12 +73,22 @@ export async function* runAgentTurn(opts: {
   const model = opts.model?.trim() || DEFAULT_MODEL();
   const client = providerClient(opts.provider);
 
-  for (let step = 0; step < MAX_STEPS; step++) {
+  for (let step = 0; ; step++) {
+    const atGuard = step === LOOP_GUARD;
+    if (atGuard) {
+      conversation.push({
+        role: 'user',
+        content:
+          'You are still calling tools after many steps — the task may be stuck. '
+          + 'Stop calling tools now and give a final answer: '
+          + 'what you completed, what remains, and how to verify the work.',
+      });
+    }
     const stream = await client.chat.completions.create(
       {
         model,
         messages: conversation as unknown as ChatCompletionMessageParam[],
-        tools: TOOLS,
+        ...(atGuard ? {} : { tools: TOOLS }),
         stream: true,
       },
       { signal: opts.signal }
@@ -116,6 +136,12 @@ export async function* runAgentTurn(opts: {
 
     const calls = rawCalls.filter((c) => c.id && c.name);
     if (calls.length > 0) {
+      if (atGuard) {
+        // Tools were not offered on the wrap-up call — a provider that still
+        // emits calls here is misbehaving; fail instead of looping.
+        yield { type: 'error', message: 'agent appears stuck in a tool loop — stopped by the loop guard' };
+        return;
+      }
       const stored: StoredToolCall[] = calls.map((c) => ({
         id: c.id!,
         type: 'function',
@@ -158,5 +184,4 @@ export async function* runAgentTurn(opts: {
     yield { type: 'message.complete', content, ...(reasoning ? { reasoning } : {}) };
     return;
   }
-  yield { type: 'error', message: `agent stopped after ${MAX_STEPS} steps without a final answer` };
 }
