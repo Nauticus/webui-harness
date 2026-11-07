@@ -64,7 +64,16 @@ function streamText(res: http.ServerResponse, text: string) {
 const mock = http.createServer((req, res) => {
   if (req.method === 'GET' && req.url === '/v1/models') {
     res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify({ data: [{ id: 'mock-model-1' }] }));
+    res.end(
+      JSON.stringify({
+        data: [
+          { id: 'mock-model-1' },
+          { id: 'mock-model-1-2025-01-01' }, // dated snapshot of mock-model-1
+          { id: 'mock-model-1:free' }, // service variant of mock-model-1
+          { id: 'mock-model-2' },
+        ],
+      })
+    );
     return;
   }
   if (req.method === 'GET' && req.url === '/v1/requests') {
@@ -213,9 +222,23 @@ test('e2e: normal turn, pre-turn compaction, mid-turn compaction, overflow recov
       body: JSON.stringify({ modelContextWindows: { 'mock-model-1': 5000 } }),
     });
     assert.equal(patch.status, 200);
-    const providers = await fetch(`${APP_BASE}/api/providers`).then((r) => r.json() as { models: { id: string; contextWindow?: number }[] }[]);
-    const model = providers.find((p) => p.id === provId)!.models.find((m) => m.id === 'mock-model-1');
+    const providers = await fetch(`${APP_BASE}/api/providers`).then(
+      (r) =>
+        r.json() as {
+          models: { id: string; contextWindow?: number }[];
+          model_groups: { id: string; aliases: string[]; contextWindow?: number }[];
+        }[]
+    );
+    const prov = providers.find((p) => p.id === provId)!;
+    const model = prov.models.find((m) => m.id === 'mock-model-1');
     assert.equal(model?.contextWindow, 5000);
+
+    // Aliases/snapshots are collapsed into base-model groups, canonical id first.
+    assert.deepEqual(prov.model_groups, [
+      { id: 'mock-model-1', aliases: ['mock-model-1-2025-01-01', 'mock-model-1:free'], contextWindow: 5000 },
+      { id: 'mock-model-2', aliases: [] },
+    ]);
+
     // Invalid values are rejected.
     const bad = await fetch(`${APP_BASE}/api/providers/${provId}`, {
       method: 'PATCH',

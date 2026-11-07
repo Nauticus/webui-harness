@@ -4,6 +4,17 @@ export interface ProviderModel {
   contextWindow?: number;
 }
 
+/**
+ * A base model with its detected aliases collapsed in (dated snapshots like
+ * gpt-4o-2024-11-20, OpenRouter service variants like openai/gpt-4o:free).
+ * `id` is the canonical model id to send to the provider.
+ */
+export interface ModelGroup {
+  id: string;
+  aliases: string[];
+  contextWindow?: number;
+}
+
 export interface Provider {
   id: string;
   name: string;
@@ -11,6 +22,7 @@ export interface Provider {
   api_key: string; // masked ('•••') when set
   is_default: boolean;
   models: ProviderModel[]; // detected models (+ configured context windows)
+  model_groups: ModelGroup[]; // models collapsed into base models (alias groups)
   models_error: string; // '' = detection ok
   models_checked_at: string | null;
   used_by: number; // projects using this provider

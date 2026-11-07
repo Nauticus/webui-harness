@@ -39,7 +39,9 @@ export function ProvidersPanel({
     setFormKey(p.api_key);
     setFormDefault(p.is_default);
     setFormContextWindows(
-      Object.fromEntries(p.models.map((m) => [m.id, m.contextWindow !== undefined ? String(m.contextWindow) : '']))
+      Object.fromEntries(
+        p.model_groups.map((g) => [g.id, g.contextWindow !== undefined ? String(g.contextWindow) : ''])
+      )
     );
     setError(null);
     setEditing(p);
@@ -66,14 +68,18 @@ export function ProvidersPanel({
       apiKey: formKey,
       isDefault: formDefault,
     };
-    // Only send per-model context windows that actually changed.
+    // Only send per-model context windows that actually changed. A value
+    // entered on a base model is applied to all of its aliases/snapshots.
     if (editing && editing !== 'new') {
       const windows: Record<string, number | null> = {};
-      for (const m of editing.models) {
-        const v = (formContextWindows[m.id] ?? '').trim();
+      for (const g of editing.model_groups) {
+        const v = (formContextWindows[g.id] ?? '').trim();
         const next = v === '' ? null : Number(v);
-        if ((m.contextWindow ?? null) === next) continue;
-        windows[m.id] = next;
+        for (const m of editing.models) {
+          if (m.id !== g.id && !g.aliases.includes(m.id)) continue;
+          if ((m.contextWindow ?? null) === next) continue;
+          windows[m.id] = next;
+        }
       }
       if (Object.keys(windows).length > 0) payload.modelContextWindows = windows;
     }
@@ -260,14 +266,21 @@ export function ProvidersPanel({
               </label>
               <p className="-mt-1 text-[11px] text-slate-600">
                 Used to decide when the chat context gets compacted. Blank = server default.
+                Aliases/snapshots share their base model's value.
               </p>
               <div className="flex max-h-44 flex-col gap-1 overflow-auto rounded-lg border border-slate-800 p-2">
-                {editing.models.map((m) => (
-                  <div key={m.id} className="flex items-center gap-2">
-                    <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-slate-300">{m.id}</span>
+                {editing.model_groups.map((g) => (
+                  <div key={g.id} className="flex items-center gap-2">
+                    <span
+                      className="min-w-0 flex-1 truncate font-mono text-[11px] text-slate-300"
+                      title={g.aliases.length > 0 ? `Aliases: ${g.aliases.join(', ')}` : undefined}
+                    >
+                      {g.id}
+                      {g.aliases.length > 0 && <span className="text-slate-600"> +{g.aliases.length}</span>}
+                    </span>
                     <input
-                      value={formContextWindows[m.id] ?? ''}
-                      onChange={(e) => setFormContextWindows((prev) => ({ ...prev, [m.id]: e.target.value }))}
+                      value={formContextWindows[g.id] ?? ''}
+                      onChange={(e) => setFormContextWindows((prev) => ({ ...prev, [g.id]: e.target.value }))}
                       placeholder="e.g. 128000"
                       inputMode="numeric"
                       spellCheck={false}

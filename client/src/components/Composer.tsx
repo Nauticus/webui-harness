@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import type { ProviderModel } from '../api';
+import type { ModelGroup } from '../api';
 
 /** 128000 -> '128k', 1000000 -> '1M'. */
 export function formatContextWindow(tokens: number): string {
@@ -9,13 +9,14 @@ export function formatContextWindow(tokens: number): string {
 /**
  * Composer: full-width prompt input with a compact model-picker chip.
  * Clicking the chip opens a popover listing "auto" (provider's default)
- * followed by the provider's models (with their context window when known);
- * the current pick gets a checkmark. The chip itself shows the selected
- * model's context window as a suffix (e.g. "gpt-4o · 128k").
+ * followed by the provider's base models (aliases/snapshots collapsed,
+ * with their context window when known); the current pick gets a checkmark.
+ * The chip itself shows the selected model's context window as a suffix
+ * (e.g. "gpt-4o · 128k").
  */
 export function Composer({
   model,
-  models,
+  modelGroups,
   input,
   busy,
   disabled,
@@ -26,7 +27,7 @@ export function Composer({
   onSend,
 }: {
   model: string; // '' = auto (provider's default model)
-  models: ProviderModel[];
+  modelGroups: ModelGroup[];
   input: string;
   busy: boolean;
   disabled: boolean;
@@ -57,12 +58,13 @@ export function Composer({
   }, [open]);
 
   const pickerDisabled = busy || disabled;
-  // The options list is exactly: auto first, then the provider's models.
-  const options: (string | { model: string; cw?: number })[] = [
+  // The group the current model belongs to (canonical id or one of its aliases).
+  const currentGroup = modelGroups.find((g) => g.id === model || g.aliases.includes(model));
+  // The options list is exactly: auto first, then the provider's base models.
+  const options: (string | { group: ModelGroup })[] = [
     '',
-    ...models.map((m) => ({ model: m.id, cw: m.contextWindow })),
+    ...modelGroups.map((g) => ({ group: g })),
   ];
-  const currentCw = models.find((m) => m.id === model)?.contextWindow;
 
   return (
     <footer className="border-t border-slate-800 px-5 py-4">
@@ -97,12 +99,12 @@ export function Composer({
               className="flex items-center gap-1.5 rounded-full border border-slate-700/80 bg-slate-900 px-2.5 py-1 text-[11px] text-slate-400 transition-colors hover:border-sky-500/50 hover:text-slate-200 disabled:opacity-50"
             >
               <span className="max-w-[14rem] truncate">{model || 'auto'}</span>
-              {model && currentCw !== undefined && (
+              {model && currentGroup?.contextWindow !== undefined && (
                 <span
                   className="shrink-0 rounded-full border border-slate-700 px-1.5 text-[10px] text-slate-500"
                   title="Context window (tokens)"
                 >
-                  {formatContextWindow(currentCw)}
+                  {formatContextWindow(currentGroup.contextWindow)}
                 </span>
               )}
               <svg
@@ -121,28 +123,41 @@ export function Composer({
                 className="absolute bottom-full left-0 z-10 mb-1.5 max-h-64 w-60 overflow-auto rounded-xl border border-slate-700 bg-slate-900 py-1 shadow-xl"
               >
                 {options.map((o) => {
-                  const id = typeof o === 'string' ? o : o.model;
-                  const cw = typeof o === 'string' ? undefined : o.cw;
-                  const selected = id === model;
+                  const group = typeof o === 'string' ? undefined : o.group;
+                  const id = group ? group.id : '';
+                  const selected = group ? group.id === model || group.aliases.includes(model) : model === '';
                   return (
                     <button
                       key={id || 'auto'}
                       role="option"
                       aria-selected={selected}
                       onClick={() => {
-                        onModelChange(id);
+                        onModelChange(id); // selecting a group sends its canonical id
                         setOpen(false);
                       }}
                       className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-slate-800 ${
                         selected ? 'text-sky-400' : 'text-slate-300'
                       }`}
+                      title={group && group.aliases.length > 0 ? `Aliases: ${group.aliases.join(', ')}` : undefined}
                     >
-                      <span className="truncate">
-                        {id || <span className="text-slate-400">auto — provider's default</span>}
+                      <span className="flex min-w-0 items-center gap-1.5">
+                        <span className="truncate">
+                          {id || <span className="text-slate-400">auto — provider's default</span>}
+                        </span>
+                        {group && group.aliases.length > 0 && (
+                          <span
+                            className="shrink-0 rounded-full border border-slate-700 px-1 text-[10px] text-slate-500"
+                            title={`Aliases: ${group.aliases.join(', ')}`}
+                          >
+                            +{group.aliases.length}
+                          </span>
+                        )}
                       </span>
                       <span className="flex shrink-0 items-center gap-1.5">
-                        {cw !== undefined && (
-                          <span className="text-[10px] text-slate-500">{formatContextWindow(cw)}</span>
+                        {group?.contextWindow !== undefined && (
+                          <span className="text-[10px] text-slate-500">
+                            {formatContextWindow(group.contextWindow)}
+                          </span>
                         )}
                         {selected && <span>✓</span>}
                       </span>

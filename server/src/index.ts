@@ -16,7 +16,7 @@ import {
   toLlmMessages,
   type CompactableMessage,
 } from './compaction';
-import { detectModels } from './providers';
+import { detectModels, groupModels } from './providers';
 import { DEFAULT_WORKSPACE } from './tools';
 
 const PORT = Number(process.env.PORT ?? 3001);
@@ -83,10 +83,12 @@ function validateProviderId(providerId: unknown): string | undefined {
 
 /** Public shape of a provider row: models parsed (normalized), is_default boolean, key masked. */
 function publicProvider(row: db.ProviderRow): Record<string, unknown> {
+  const models = db.parseProviderModels(row.models);
   return {
     ...row,
     is_default: Boolean(row.is_default),
-    models: db.parseProviderModels(row.models),
+    models, // detected models with per-model context windows
+    model_groups: groupModels(models), // aliases/snapshots collapsed into base models
     api_key: row.api_key ? '•••' : '',
   };
 }

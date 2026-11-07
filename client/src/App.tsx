@@ -196,7 +196,7 @@ export default function App() {
 
         <Composer
           model={chat.modelValue}
-          models={providers.composerProvider(projects.activeProject?.provider_id)?.models ?? []}
+          modelGroups={providers.composerProvider(projects.activeProject?.provider_id)?.model_groups ?? []}
           input={chat.input}
           busy={chat.busy}
           disabled={!projects.activeProject}
