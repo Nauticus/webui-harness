@@ -28,7 +28,7 @@ const TAG_LEN = 16;
 
 export interface HistoryRecord {
   seq: number;
-  role: 'user' | 'assistant' | 'tool';
+  role: 'user' | 'assistant' | 'tool' | 'compaction';
   content: string;
   meta?: Record<string, unknown>;
 }

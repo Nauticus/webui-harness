@@ -2,6 +2,13 @@ import OpenAI from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { TOOLS, runTool } from './tools';
 import { providerClient, type ProviderCreds } from './providers';
+import {
+  COMPACT_THRESHOLD,
+  compactMessages,
+  estimateTokens,
+  summaryAsMessage,
+  type CompactableMessage,
+} from './compaction';
 
 /** One OpenAI-style tool call (serialized form, safe for DB storage). */
 export interface StoredToolCall {
@@ -17,6 +24,7 @@ export interface LlmMessage {
   tool_call_id?: string;
   name?: string;
   reasoning?: string; // assistant thinking, sent back for multi-turn continuity
+  seq?: number; // history row seq when the message came from a persisted record
 }
 
 export type AgentEvent =
@@ -25,6 +33,12 @@ export type AgentEvent =
   | { type: 'tool.round'; content: string; toolCalls: StoredToolCall[]; reasoning?: string }
   | { type: 'tool.start'; id: string; name: string; args: unknown }
   | { type: 'tool.result'; id: string; name: string; result: string; diff?: string }
+  | {
+      type: 'compaction';
+      summary: string;
+      firstKeptSeq: number | null;
+      tokensBefore: number;
+    }
   | { type: 'message.complete'; content: string; reasoning?: string }
   | { type: 'error'; message: string };
 
@@ -60,21 +74,43 @@ export const DEFAULT_MODEL = () => process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
  * LOOP_GUARD) — there is no step budget.
  */
 export async function* runAgentTurn(opts: {
-  messages: LlmMessage[];
+  messages: CompactableMessage[];
   workspace: string;
   model?: string; // '' or undefined -> server default
   provider: ProviderCreds;
   signal?: AbortSignal;
 }): AsyncGenerator<AgentEvent> {
-  const conversation: LlmMessage[] = [
+  const conversation: CompactableMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT(opts.workspace) },
     ...opts.messages,
   ];
   const model = opts.model?.trim() || DEFAULT_MODEL();
   const client = providerClient(opts.provider);
 
-  for (let step = 0; ; step++) {
-    const atGuard = step === LOOP_GUARD;
+  type CompactionEvent = Extract<AgentEvent, { type: 'compaction' }>;
+
+  /**
+   * Summarize the old part of the conversation in place. Returns the event to
+   * emit on success, or false on failure — the turn then continues with the
+   * full context rather than aborting.
+   */
+  const compactInPlace = async (label: string): Promise<CompactionEvent | false> => {
+    const body = conversation.slice(1);
+    try {
+      const c = await compactMessages({ messages: body, provider: opts.provider, model, signal: opts.signal });
+      conversation.length = 1;
+      conversation.push(summaryAsMessage(c.summary), ...body.slice(c.firstKeptIndex));
+      return { type: 'compaction', summary: c.summary, firstKeptSeq: c.firstKeptSeq, tokensBefore: c.tokensBefore };
+    } catch (err) {
+      console.warn(`[weblisan] ${label} compaction failed: ${String(err)}`);
+      return false;
+    }
+  };
+
+  let step = 0;
+  let overflowRetried = false;
+  while (true) {
+    const atGuard = step >= LOOP_GUARD;
     if (atGuard) {
       conversation.push({
         role: 'user',
@@ -84,15 +120,38 @@ export async function* runAgentTurn(opts: {
           + 'what you completed, what remains, and how to verify the work.',
       });
     }
-    const stream = await client.chat.completions.create(
-      {
-        model,
-        messages: conversation as unknown as ChatCompletionMessageParam[],
-        ...(atGuard ? {} : { tools: TOOLS }),
-        stream: true,
-      },
-      { signal: opts.signal }
-    );
+
+    // Mid-turn compaction: tool results are the usual context growth; check
+    // after each tool round, before the next LLM call.
+    if (!atGuard && step > 0 && estimateTokens(conversation.slice(1)) > COMPACT_THRESHOLD) {
+      const c = await compactInPlace('mid-turn');
+      if (c) yield c;
+    }
+
+    let stream;
+    try {
+      stream = await client.chat.completions.create(
+        {
+          model,
+          messages: conversation as unknown as ChatCompletionMessageParam[],
+          ...(atGuard ? {} : { tools: TOOLS }),
+          stream: true,
+        },
+        { signal: opts.signal }
+      );
+    } catch (err) {
+      // One-shot overflow recovery: the real context window is smaller than
+      // estimated — compact aggressively and retry the same step.
+      if (!overflowRetried && !atGuard && /context|token|too large|too long|exceed|overflow/i.test(String(err))) {
+        overflowRetried = true;
+        const c = await compactInPlace('overflow-recovery');
+        if (c) {
+          yield c;
+          continue; // retry without consuming a step
+        }
+      }
+      throw err;
+    }
 
     let content = '';
     let reasoning = '';
@@ -178,6 +237,7 @@ export async function* runAgentTurn(opts: {
           name: call.function.name,
         });
       }
+      step++;
       continue;
     }
 

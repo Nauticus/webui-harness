@@ -147,6 +147,10 @@ export function useChatTurn(opts: {
           case 'error':
             setItems((prev) => [...prev, { kind: 'error', message: String(ev.message) }]);
             break;
+          case 'compaction':
+            // Mid-turn compaction: the model's context was just summarized.
+            setItems((prev) => [...prev, { kind: 'compaction' }]);
+            break;
           default:
             break;
         }

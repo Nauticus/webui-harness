@@ -7,7 +7,15 @@ import os from 'node:os';
 import path from 'node:path';
 import * as db from './db';
 import * as history from './history';
-import { runAgentTurn, type LlmMessage, type StoredToolCall } from './agent';
+import { runAgentTurn, type StoredToolCall, DEFAULT_MODEL } from './agent';
+import {
+  COMPACT_THRESHOLD,
+  compactMessages,
+  estimateTokens,
+  summaryAsMessage,
+  toLlmMessages,
+  type CompactableMessage,
+} from './compaction';
 import { detectModels } from './providers';
 import { DEFAULT_WORKSPACE } from './tools';
 
@@ -83,24 +91,6 @@ function publicProvider(row: db.ProviderRow): Record<string, unknown> {
   };
 }
 
-function toLlmMessages(rows: history.HistoryRecord[]): LlmMessage[] {
-  return rows.map((r) => {
-    const meta = (r.meta ?? {}) as {
-      tool_calls?: StoredToolCall[];
-      tool_call_id?: unknown;
-      name?: unknown;
-      reasoning?: unknown;
-    };
-    return {
-      role: r.role as LlmMessage['role'],
-      content: r.content || null,
-      ...(meta.tool_calls ? { tool_calls: meta.tool_calls } : {}),
-      ...(meta.tool_call_id !== undefined ? { tool_call_id: String(meta.tool_call_id) } : {}),
-      ...(meta.name !== undefined ? { name: String(meta.name) } : {}),
-      ...(r.role === 'assistant' && meta.reasoning ? { reasoning: String(meta.reasoning) } : {}),
-    };
-  });
-}
 
 app.get('/api/health', async () => ({ ok: true, defaultWorkspace: DEFAULT_WORKSPACE }));
 
@@ -393,7 +383,25 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   const toolArgs = new Map<string, { name: string; args: unknown }>();
   try {
     const historyRows = await history.readHistory(id, session.project_id);
-    for await (const ev of runAgentTurn({ messages: toLlmMessages(historyRows), workspace, model, provider: providerCreds })) {
+    let messages = toLlmMessages(historyRows);
+    // Pre-turn compaction: the context may have grown past the threshold in
+    // an earlier turn. Non-fatal — on failure the full context is sent.
+    if (estimateTokens(messages) > COMPACT_THRESHOLD) {
+      const c = await compactMessages({ messages, provider: providerCreds, model: model || DEFAULT_MODEL() }).catch((err) => {
+        app.log.warn(`pre-turn compaction failed: ${String(err)}`);
+        return undefined;
+      });
+      if (c) {
+        await history.appendRecord(id, session.project_id, {
+          role: 'compaction',
+          content: c.summary,
+          meta: { firstKeptSeq: c.firstKeptSeq, tokensBefore: c.tokensBefore },
+        });
+        send({ type: 'compaction', summary: c.summary, firstKeptSeq: c.firstKeptSeq, tokensBefore: c.tokensBefore });
+        messages = [summaryAsMessage(c.summary), ...messages.slice(c.firstKeptIndex)];
+      }
+    }
+    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds })) {
       send(ev);
       switch (ev.type) {
         case 'message.complete':
@@ -424,6 +432,13 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           });
           break;
         }
+        case 'compaction':
+          await history.appendRecord(id, session.project_id, {
+            role: 'compaction',
+            content: ev.summary,
+            meta: { firstKeptSeq: ev.firstKeptSeq, tokensBefore: ev.tokensBefore },
+          });
+          break;
         default:
           break;
       }

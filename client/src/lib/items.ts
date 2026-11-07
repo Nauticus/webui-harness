@@ -6,7 +6,8 @@ export type Item =
   | { kind: 'assistant'; content: string }
   | { kind: 'thinking'; content: string; done: boolean }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; diff?: string }
-  | { kind: 'error'; message: string };
+  | { kind: 'error'; message: string }
+  | { kind: 'compaction' };
 
 export function rowsToItems(rows: MessageRow[]): Item[] {
   const items: Item[] = [];
@@ -20,7 +21,11 @@ export function rowsToItems(rows: MessageRow[]): Item[] {
       }
     }
     if (r.role === 'user') items.push({ kind: 'user', content: r.content });
-    else if (r.role === 'assistant') {
+    else if (r.role === 'compaction') {
+      // A compaction record only changes what the model sees; in the chat it
+      // is a divider marking where the context was summarized.
+      items.push({ kind: 'compaction' });
+    } else if (r.role === 'assistant') {
       if (meta.reasoning) items.push({ kind: 'thinking', content: meta.reasoning, done: true });
       if (r.content) items.push({ kind: 'assistant', content: r.content });
     } else if (r.role === 'tool') {

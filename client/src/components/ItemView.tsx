@@ -36,6 +36,14 @@ export function ItemView({ item, isLast, busy }: { item: Item; isLast: boolean; 
       return <ThinkingCard content={item.content} done={item.done} />;
     case 'tool':
       return <ToolCard name={item.name} args={item.args} result={item.result} diff={item.diff} />;
+    case 'compaction':
+      return (
+        <div className="flex items-center gap-3 px-2 py-1 text-[10px] uppercase tracking-wider text-slate-600">
+          <span className="h-px flex-1 bg-slate-800" />
+          ⧉ context summarized
+          <span className="h-px flex-1 bg-slate-800" />
+        </div>
+      );
     case 'error':
       return (
         <div className="self-start">
