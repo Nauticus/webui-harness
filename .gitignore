@@ -5,3 +5,6 @@ dist/
 server/workspace/
 data/
 .DS_Store
+
+# pi agent local state
+.pi/

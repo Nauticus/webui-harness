@@ -1,1088 +1,212 @@
-import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import ReactMarkdown from 'react-markdown';
-import { api, streamTurn, type DirsResponse, type MessageRow, type Project, type Provider, type Session } from './api';
-
-type Item =
-  | { kind: 'user'; content: string }
-  | { kind: 'assistant'; content: string }
-  | { kind: 'thinking'; content: string; done: boolean }
-  | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string }
-  | { kind: 'error'; message: string };
-
-type ProjectDialog = { mode: 'create' } | { mode: 'edit'; project: Project } | null;
-
-function rowsToItems(rows: MessageRow[]): Item[] {
-  const items: Item[] = [];
-  for (const r of rows) {
-    let meta: { tool_calls?: unknown[]; name?: string; args?: unknown; reasoning?: string } = {};
-    if (r.meta) {
-      try {
-        meta = JSON.parse(r.meta);
-      } catch {
-        meta = {};
-      }
-    }
-    if (r.role === 'user') items.push({ kind: 'user', content: r.content });
-    else if (r.role === 'assistant') {
-      if (meta.reasoning) items.push({ kind: 'thinking', content: meta.reasoning, done: true });
-      if (r.content) items.push({ kind: 'assistant', content: r.content });
-    } else if (r.role === 'tool') {
-      items.push({ kind: 'tool', id: String(r.id), name: meta.name ?? 'tool', args: meta.args, result: r.content });
-    }
-  }
-  return items;
-}
-
-const TOOL_ICONS: Record<string, string> = {
-  bash: '$',
-  read_file: '📄',
-  write_file: '✏️',
-  list_dir: '📁',
-};
-
-function formatArgs(args: unknown): string {
-  const s = typeof args === 'string' ? args : JSON.stringify(args);
-  return s.length > 90 ? `${s.slice(0, 90)}…` : s;
-}
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { api } from './api';
+import { useProjects } from './hooks/useProjects';
+import { useSessions } from './hooks/useSessions';
+import { useProviders } from './hooks/useProviders';
+import { useChatTurn } from './hooks/useChatTurn';
+import { Sidebar } from './components/Sidebar';
+import { Header } from './components/Header';
+import { ChatView } from './components/ChatView';
+import { Composer } from './components/Composer';
+import { ProjectDialog, type ProjectDialogState } from './components/dialogs/ProjectDialog';
+import { ProvidersPanel } from './components/dialogs/ProvidersPanel';
 
 export default function App() {
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
-  const [projectsLoaded, setProjectsLoaded] = useState(false);
-
-  const [sessions, setSessions] = useState<Session[]>([]);
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
-  const [items, setItems] = useState<Item[]>([]);
-  const [input, setInput] = useState('');
-  const [busy, setBusy] = useState(false);
-  const [loadError, setLoadError] = useState<string | null>(null);
-  const [dialog, setDialog] = useState<ProjectDialog>(null);
-  const [providers, setProviders] = useState<Provider[]>([]);
+  const projects = useProjects();
+  const sessions = useSessions();
+  const providers = useProviders();
+  const [dialog, setDialog] = useState<ProjectDialogState | null>(null);
   const [providersOpen, setProvidersOpen] = useState(false);
-  const [pendingModels, setPendingModels] = useState<Record<string, string>>({}); // per-project, until a session exists
+  const [loadError, setLoadError] = useState<string | null>(null);
 
-  const bottomRef = useRef<HTMLDivElement>(null);
-  const streamedRef = useRef(false);
-
-  const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
-  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
-
-  // Provider whose models fill the composer's model select.
-  const composerProvider =
-    providers.find((p) => p.id === (activeProject?.provider_id ?? '')) ??
-    providers.find((p) => p.is_default);
-
-  const refreshProjects = useCallback(async () => {
-    setProjects(await api.listProjects());
-  }, []);
-
-  const refreshProviders = useCallback(async () => {
-    setProviders(await api.listProviders());
-  }, []);
-
-  const refreshSessions = useCallback(async (projectId: string) => {
-    setSessions(await api.listSessions(projectId));
-  }, []);
+  const chat = useChatTurn({
+    activeProjectId: projects.activeProjectId,
+    activeSessionId: sessions.activeSessionId,
+    activeSessionModel: sessions.activeSession?.model ?? '',
+    refreshSessions: sessions.refreshSessions,
+    onSessionCreated: (id) => sessions.setActiveSessionId(id),
+    onSessionModelUpdated: (id, model) => sessions.updateSessionLocal(id, model),
+  });
 
   // On first load: fetch projects, activate the first one (or open the dialog).
   useEffect(() => {
     (async () => {
-      refreshProviders().catch(() => {});
+      providers.refreshProviders().catch(() => {});
       try {
-        const list = await api.listProjects();
-        setProjects(list);
-        if (list.length > 0) {
-          const first = list[0]!;
-          setActiveProjectId(first.id);
-          setSessions(await api.listSessions(first.id));
+        const first = await projects.initialLoad();
+        if (first) {
+          await sessions.refreshSessions(first.id);
         } else {
           setDialog({ mode: 'create' });
         }
       } catch (err) {
         setLoadError(String(err instanceof Error ? err.message : err));
-      } finally {
-        setProjectsLoaded(true);
       }
     })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const selectProject = useCallback(
     async (id: string) => {
-      setActiveProjectId(id);
-      setActiveSessionId(null);
-      setItems([]);
+      projects.setActiveProjectId(id);
+      sessions.selectProject(id);
+      chat.clear();
       setLoadError(null);
       try {
-        setSessions(await api.listSessions(id));
+        await sessions.refreshSessions(id);
       } catch (err) {
         setLoadError(String(err instanceof Error ? err.message : err));
       }
     },
-    []
+    [projects, sessions, chat]
   );
-
   const selectProjectRef = useRef(selectProject);
   selectProjectRef.current = selectProject;
 
-  const loadSession = useCallback(async (id: string) => {
-    try {
-      const { messages } = await api.getSession(id);
-      setActiveSessionId(id);
-      setItems(rowsToItems(messages));
-      setLoadError(null);
-    } catch (err) {
-      setLoadError(String(err instanceof Error ? err.message : err));
-    }
-  }, []);
+  const loadSession = useCallback(
+    async (id: string) => {
+      try {
+        await chat.loadHistory(id);
+        sessions.setActiveSessionId(id);
+        setLoadError(null);
+      } catch (err) {
+        setLoadError(String(err instanceof Error ? err.message : err));
+      }
+    },
+    [chat, sessions]
+  );
 
   const newSession = useCallback(async () => {
-    if (!activeProjectId) return;
-    const s = await api.createSession(activeProjectId, pendingModels[activeProjectId]);
-    setPendingModels((prev) => {
-      const next = { ...prev };
-      delete next[activeProjectId];
-      return next;
-    });
-    await refreshSessions(activeProjectId);
-    setActiveSessionId(s.id);
-    setItems([]);
+    if (!projects.activeProjectId) return;
+    const s = await api.createSession(
+      projects.activeProjectId,
+      chat.pendingModelFor(projects.activeProjectId)
+    );
+    chat.clearPendingModel(projects.activeProjectId);
+    await sessions.refreshSessions(projects.activeProjectId);
+    sessions.setActiveSessionId(s.id);
+    chat.clear();
     setLoadError(null);
-  }, [activeProjectId, pendingModels, refreshSessions]);
+  }, [projects, chat, sessions]);
 
   const removeSession = useCallback(
     async (id: string) => {
-      await api.deleteSession(id);
-      if (activeProjectId) {
-        if (activeSessionId === id) {
-          setActiveSessionId(null);
-          setItems([]);
-        }
-        await refreshSessions(activeProjectId);
+      const wasActive = sessions.activeSessionId === id;
+      await sessions.removeSession(id);
+      if (projects.activeProjectId) {
+        if (wasActive) chat.clear();
+        await sessions.refreshSessions(projects.activeProjectId);
       }
     },
-    [activeProjectId, activeSessionId, refreshSessions]
+    [projects, sessions, chat]
   );
 
-  const send = useCallback(async () => {
-    const content = input.trim();
-    if (!content || busy || !activeProjectId) return;
+  const onProjectCreated = useCallback(
+    async (p: { id: string }) => {
+      await projects.refreshProjects();
+      setDialog(null);
+      await selectProjectRef.current(p.id);
+    },
+    [projects]
+  );
 
-    let sessionId = activeSessionId;
-    if (!sessionId) {
-      const s = await api.createSession(activeProjectId, pendingModels[activeProjectId]);
-      setPendingModels((prev) => {
-        const next = { ...prev };
-        delete next[activeProjectId];
-        return next;
-      });
-      await refreshSessions(activeProjectId);
-      sessionId = s.id;
-      setActiveSessionId(s.id);
-      setItems([]);
-    }
-    setInput('');
-    setBusy(true);
-    streamedRef.current = false;
-    // Only the user item is pre-created; thinking/assistant/tool blocks are
-    // appended as they arrive so the UI matches the server's stream order.
-    setItems((prev) => [...prev, { kind: 'user', content }]);
+  const onProjectUpdated = useCallback(async () => {
+    await projects.refreshProjects();
+    setDialog(null);
+  }, [projects]);
 
-    try {
-      await streamTurn(sessionId, content, (ev) => {
-        switch (ev.type) {
-          case 'message.delta': {
-            streamedRef.current = true;
-            setItems((prev) => {
-              const next = prev.map((it) =>
-                it.kind === 'thinking' && !it.done ? { ...it, done: true } : it
-              );
-              const last = next[next.length - 1];
-              if (last && last.kind === 'assistant') {
-                next[next.length - 1] = { kind: 'assistant', content: last.content + String(ev.text) };
-              } else {
-                next.push({ kind: 'assistant', content: String(ev.text) });
-              }
-              return next;
-            });
-            break;
-          }
-          case 'thinking.delta':
-            setItems((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.kind === 'thinking' && !last.done) {
-                next[next.length - 1] = { ...last, content: last.content + String(ev.text) };
-              } else {
-                next.push({ kind: 'thinking', content: String(ev.text), done: false });
-              }
-              return next;
-            });
-            break;
-          case 'tool.start':
-            setItems((prev) =>
-              prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it))
-            );
-            setItems((prev) => [
-              ...prev,
-              { kind: 'tool', id: String(ev.id), name: String(ev.name), args: ev.args },
-            ]);
-            break;
-          case 'tool.result':
-            setItems((prev) =>
-              prev.map((it) =>
-                it.kind === 'tool' && it.id === String(ev.id)
-                  ? { ...it, result: String(ev.result) }
-                  : it
-              )
-            );
-            break;
-          case 'message.complete':
-            setItems((prev) =>
-              prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it))
-            );
-            if (String(ev.content) && !streamedRef.current) {
-              setItems((prev) => [...prev, { kind: 'assistant', content: String(ev.content) }]);
-            }
-            break;
-          case 'error':
-            setItems((prev) => [...prev, { kind: 'error', message: String(ev.message) }]);
-            break;
-          default:
-            break;
+  const onProjectDeleted = useCallback(
+    async (id: string) => {
+      await api.deleteProject(id);
+      const remaining = await api.listProjects();
+      projects.setProjects(remaining);
+      setDialog(null);
+      if (projects.activeProjectId === id) {
+        sessions.selectProject(id);
+        chat.clear();
+        if (remaining.length > 0) {
+          const first = remaining[0]!;
+          projects.setActiveProjectId(first.id);
+          await sessions.refreshSessions(first.id);
         }
-      });
-      await refreshSessions(activeProjectId);
-    } catch (err) {
-      setItems((prev) => [
-        ...prev,
-        { kind: 'error', message: String(err instanceof Error ? err.message : err) },
-      ]);
-    } finally {
-      setBusy(false);
-    }
-  }, [input, busy, activeProjectId, activeSessionId, pendingModels, refreshSessions]);
-
-  const onModelChange = useCallback(
-    async (v: string) => {
-      if (activeSessionId) {
-        try {
-          const s = await api.updateSessionModel(activeSessionId, v);
-          setSessions((prev) => prev.map((x) => (x.id === s.id ? s : x)));
-        } catch (err) {
-          setLoadError(String(err instanceof Error ? err.message : err));
-        }
-      } else if (activeProjectId) {
-        setPendingModels((prev) => ({ ...prev, [activeProjectId]: v }));
       }
     },
-    [activeSessionId, activeProjectId]
+    [projects, sessions, chat]
   );
 
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      void send();
-    }
-  };
-
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: 'smooth' });
-  }, [items, busy]);
-
-  /* ---------- rendering ---------- */
-
-  const onboarding = projectsLoaded && projects.length === 0;
+  const onboarding = projects.projectsLoaded && projects.projects.length === 0;
 
   return (
     <div className="flex h-full bg-slate-950 text-slate-100">
-      {/* ---------- sidebar ---------- */}
-      <aside className="flex w-64 shrink-0 flex-col border-r border-slate-800 bg-slate-900/50">
-        <div className="flex items-center justify-between px-4 pb-2 pt-4">
-          <span className="text-sm font-bold tracking-widest text-sky-400">weblisan</span>
-          <span className="text-[10px] uppercase tracking-wider text-slate-600">local agent</span>
-        </div>
-        <div className="px-3 pt-1">
-          <button
-            onClick={() => void newSession()}
-            disabled={!activeProject}
-            className="w-full rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 py-2 text-sm font-medium text-sky-300 transition-colors hover:bg-sky-500/20 disabled:cursor-default disabled:opacity-40"
-          >
-            + New session
-          </button>
-        </div>
-        <nav className="mt-2 flex-1 overflow-y-auto px-3 pb-3">
-          {activeProject && sessions.length === 0 ? (
-            <p className="px-2 py-3 text-xs text-slate-600">
-              No sessions in <span className="text-slate-400">{activeProject.name}</span> yet
-            </p>
-          ) : (
-            <ul className="space-y-0.5">
-              {sessions.map((s) => (
-                <li key={s.id} className="group relative">
-                  <button
-                    onClick={() => void loadSession(s.id)}
-                    className={`w-full rounded-lg px-3 py-2 pr-7 text-left transition-colors ${
-                      s.id === activeSessionId
-                        ? 'bg-slate-800 text-slate-100'
-                        : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
-                    }`}
-                  >
-                    <span className="block truncate text-sm">{s.title}</span>
-                    <span className="block truncate text-[10px] text-slate-600">{s.created_at}</span>
-                  </button>
-                  <button
-                    onClick={() => void removeSession(s.id)}
-                    title="Delete session"
-                    className="absolute right-2 top-1/2 hidden h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-700 hover:text-rose-400 group-hover:flex"
-                  >
-                    ×
-                  </button>
-                </li>
-              ))}
-            </ul>
-          )}
-        </nav>
-      </aside>
+      <Sidebar
+        sessions={sessions.sessions}
+        activeProject={projects.activeProject}
+        activeSessionId={sessions.activeSessionId}
+        onNewSession={() => void newSession()}
+        onSelect={(id) => void loadSession(id)}
+        onRemove={(id) => void removeSession(id)}
+      />
 
-      {/* ---------- main ---------- */}
       <main className="flex min-w-0 flex-1 flex-col">
-        {/* project tabs */}
-        <header className="flex items-center gap-1 border-b border-slate-800 px-3 py-2">
-          <button
-            onClick={() => {
-              setProvidersOpen((v) => !v);
-              setDialog(null);
-            }}
-            title="Providers"
-            className={`flex shrink-0 items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-sm transition-colors ${
-              providersOpen
-                ? 'bg-slate-800 text-slate-100'
-                : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
-            }`}
-          >
-            <span>🔌</span>
-            {providers.some((p) => p.models_error) && (
-              <span className="h-1.5 w-1.5 rounded-full bg-amber-400" title="a provider failed model detection" />
-            )}
-          </button>
-          <div className="mx-1 h-5 w-px shrink-0 bg-slate-800" />
-          <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto">
-            {projects.map((p) => (
-              <button
-                key={p.id}
-                onClick={() => void selectProject(p.id)}
-                title={`${p.cwd || 'default dir'}`}
-                className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors ${
-                  p.id === activeProjectId
-                    ? 'bg-slate-800 font-medium text-slate-100'
-                    : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
-                }`}
-              >
-                <span className="max-w-40 truncate">{p.name}</span>
-              </button>
-            ))}
-            <button
-              onClick={() => setDialog({ mode: 'create' })}
-              title="New project"
-              className="shrink-0 rounded-lg px-2.5 py-1.5 text-lg leading-none text-slate-500 transition-colors hover:bg-slate-800 hover:text-sky-400"
-            >
-              +
-            </button>
-          </div>
-          {activeProject && (
-            <>
-              <span className="hidden max-w-44 truncate rounded-full border border-slate-700 bg-slate-900 px-2.5 py-0.5 font-mono text-[10px] text-slate-400 sm:inline">
-                {activeProject.cwd || 'default dir'}
-              </span>
-              <button
-                onClick={() => setDialog({ mode: 'edit', project: activeProject })}
-                title="Project settings"
-                className="rounded-lg p-1.5 text-lg leading-none text-slate-500 transition-colors hover:bg-slate-800 hover:text-sky-400"
-              >
-                ⚙
-              </button>
-            </>
-          )}
-        </header>
+        <Header
+          projects={projects.projects}
+          activeProject={projects.activeProject}
+          providersOpen={providersOpen}
+          hasDetectionFailure={providers.hasDetectionFailure}
+          onToggleProviders={() => {
+            setProvidersOpen((v) => !v);
+            setDialog(null);
+          }}
+          onSelectProject={(id) => void selectProject(id)}
+          onNewProject={() => setDialog({ mode: 'create' })}
+          onEditProject={() =>
+            projects.activeProject && setDialog({ mode: 'edit', project: projects.activeProject })
+          }
+        />
 
         {providersOpen && (
           <ProvidersPanel
-            providers={providers}
+            providers={providers.providers}
             onClose={() => setProvidersOpen(false)}
-            onChanged={refreshProviders}
+            onChanged={providers.refreshProviders}
           />
         )}
 
         {dialog && (
           <ProjectDialog
             dialog={dialog}
-            providers={providers}
+            providers={providers.providers}
             onClose={() => setDialog(null)}
-            onCreated={async (p) => {
-              await refreshProjects();
-              setDialog(null);
-              await selectProjectRef.current(p.id);
-            }}
-            onUpdated={async () => {
-              await refreshProjects();
-              setDialog(null);
-            }}
-            onDeleted={async (id) => {
-              await api.deleteProject(id);
-              const remaining = await api.listProjects();
-              setProjects(remaining);
-              setDialog(null);
-              if (activeProjectId === id) {
-                setActiveSessionId(null);
-                setItems([]);
-                if (remaining.length > 0) {
-                  const first = remaining[0]!;
-                  setActiveProjectId(first.id);
-                  setSessions(await api.listSessions(first.id));
-                }
-              }
-            }}
+            onCreated={(p) => void onProjectCreated(p)}
+            onUpdated={() => void onProjectUpdated()}
+            onDeleted={(id) => void onProjectDeleted(id)}
           />
         )}
 
-        <div className="flex-1 overflow-y-auto px-5 py-6">
-          <div className="mx-auto flex w-full max-w-3xl flex-col gap-4">
-            {loadError && (
-              <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-300">
-                {loadError}
-              </div>
-            )}
+        <ChatView
+          items={chat.items}
+          busy={chat.busy}
+          onboarding={onboarding}
+          activeProject={projects.activeProject}
+          hasActiveSession={sessions.activeSessionId !== null}
+          loadError={loadError}
+          onCreateProject={() => setDialog({ mode: 'create' })}
+          bottomRef={chat.bottomRef}
+        />
 
-            {onboarding && (
-              <div className="m-auto max-w-md text-center">
-                <div className="mx-auto mb-4 flex h-14 w-14 items-center justify-center rounded-2xl border border-slate-800 bg-slate-900 text-3xl">
-                  📦
-                </div>
-                <h2 className="text-base font-semibold text-slate-200">Create a project to get started</h2>
-                <p className="mt-2 text-sm leading-relaxed text-slate-500">
-                  A project defines the working directory and provider for its agent
-                  sessions. Leave the working dir blank to use the server default.
-                </p>
-                <button
-                  onClick={() => setDialog({ mode: 'create' })}
-                  className="mt-5 rounded-xl bg-sky-500 px-5 py-2.5 text-sm font-semibold text-white transition-colors hover:bg-sky-400"
-                >
-                  Create your first project
-                </button>
-              </div>
-            )}
-
-            {!onboarding && items.length === 0 && !loadError && !busy && (
-              <div className="m-auto max-w-sm text-center">
-                <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-2xl border border-slate-800 bg-slate-900 text-2xl">
-                  🤖
-                </div>
-                <p className="text-sm font-medium text-slate-300">
-                  {activeSessionId ? 'Pick up the conversation' : 'Start a conversation'}
-                </p>
-                <p className="mt-1 text-xs leading-relaxed text-slate-500">
-                  The agent runs a real loop with shell &amp; file tools, sandboxed to{' '}
-                  <span className="font-mono text-slate-400">
-                    {activeProject ? activeProject.cwd || 'the server default dir' : ''}
-                  </span>
-                  .
-                </p>
-              </div>
-            )}
-
-            {items.map((it, i) => (
-              <ItemView key={i} item={it} isLast={i === items.length - 1} busy={busy} />
-            ))}
-            <div ref={bottomRef} />
-          </div>
-        </div>
-
-        <footer className="border-t border-slate-800 px-5 py-4">
-          <div className="mx-auto w-full max-w-3xl">
-            <div className="flex items-end gap-2 rounded-2xl border border-slate-700 bg-slate-900 p-2 transition-colors focus-within:border-sky-500/60">
-              <select
-                value={activeSession ? activeSession.model : (pendingModels[activeProjectId ?? ''] ?? '')}
-                onChange={(e) => void onModelChange(e.target.value)}
-                disabled={busy || !activeProject}
-                title="Model for this chat"
-                className="h-9 w-44 max-w-[40%] shrink-0 cursor-pointer truncate rounded-xl border border-slate-700 bg-slate-950 px-2 text-xs text-slate-300 outline-none disabled:opacity-50"
-              >
-                <option value="">auto</option>
-                {(composerProvider?.models ?? []).map((m) => (
-                  <option key={m} value={m}>
-                    {m}
-                  </option>
-                ))}
-              </select>
-              <textarea
-                value={input}
-                onChange={(e) => setInput(e.target.value)}
-                onKeyDown={onKeyDown}
-                placeholder={
-                  activeProject
-                    ? 'Ask the agent to do something…'
-                    : 'Create a project first…'
-                }
-                rows={2}
-                disabled={busy || !activeProject}
-                className="max-h-40 flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-slate-600 disabled:opacity-50"
-              />
-              <button
-                onClick={() => void send()}
-                disabled={busy || !input.trim() || !activeProject}
-                className="rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-400 disabled:cursor-default disabled:bg-slate-800 disabled:text-slate-500"
-              >
-                {busy ? '…' : 'Send'}
-              </button>
-            </div>
-            <p className="mt-1.5 text-center text-[11px] text-slate-600">
-              Enter to send · Shift+Enter for newline · model: auto = provider's first model
-            </p>
-          </div>
-        </footer>
+        <Composer
+          model={chat.modelValue}
+          models={providers.composerProvider(projects.activeProject?.provider_id)?.models ?? []}
+          input={chat.input}
+          busy={chat.busy}
+          disabled={!projects.activeProject}
+          placeholder={projects.activeProject ? 'Ask the agent to do something…' : 'Create a project first…'}
+          onModelChange={(v) => void chat.setModel(v)}
+          onInput={chat.setInput}
+          onKeyDown={chat.onKeyDown}
+          onSend={() => void chat.send()}
+        />
       </main>
     </div>
   );
-}
-
-/* ---------- project dialog (create / edit) ---------- */
-
-function ProjectDialog({
-  dialog,
-  providers,
-  onClose,
-  onCreated,
-  onUpdated,
-  onDeleted,
-}: {
-  dialog: Exclude<ProjectDialog, null>;
-  providers: Provider[];
-  onClose: () => void;
-  onCreated: (p: Project) => void;
-  onUpdated: () => void;
-  onDeleted: (id: string) => void;
-}) {
-  const editing = dialog.mode === 'edit' ? dialog.project : null;
-  const [name, setName] = useState(editing?.name ?? '');
-  const [cwd, setCwd] = useState(editing?.cwd ?? '');
-  const [providerId, setProviderId] = useState(editing?.provider_id ?? '');
-  const [error, setError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
-
-  const [browsing, setBrowsing] = useState(false);
-  const [dirs, setDirs] = useState<DirsResponse | null>(null);
-
-  const defaultProviderName = providers.find((p) => p.is_default)?.name ?? 'default';
-
-  const browseTo = useCallback(async (p?: string) => {
-    try {
-      setDirs(await api.listDirs(p));
-      setBrowsing(true);
-    } catch (err) {
-      setError(String(err instanceof Error ? err.message : err));
-    }
-  }, []);
-
-  const save = async () => {
-    setSaving(true);
-    setError(null);
-    try {
-      const payload = {
-        name: name.trim() || undefined,
-        cwd: cwd.trim(),
-        providerId,
-      };
-      if (editing) {
-        await api.updateProject(editing.id, payload);
-        onUpdated();
-      } else {
-        const p = await api.createProject(payload);
-        onCreated(p);
-      }
-    } catch (err) {
-      setError(String(err instanceof Error ? err.message : err));
-      setSaving(false);
-    }
-  };
-
-  const remove = () => {
-    if (!editing) return;
-    if (!window.confirm(`Delete project "${editing.name}" and all of its sessions?`)) return;
-    onDeleted(editing.id);
-  };
-
-  const inputCls =
-    'rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-sky-500';
-
-  return (
-    <div className="flex max-h-[65%] flex-col gap-3 overflow-y-auto border-b border-slate-800 bg-slate-900/70 px-5 py-4">
-      <h2 className="text-sm font-semibold text-slate-200">
-        {editing ? `Project: ${editing.name}` : 'New project'}
-      </h2>
-
-      <div className="flex flex-col gap-1.5">
-        <label className="text-[11px] uppercase tracking-wider text-slate-500">Name</label>
-        <input
-          value={name}
-          onChange={(e) => setName(e.target.value)}
-          placeholder={cwd.trim() ? cwd.trim().split('/').filter(Boolean).pop() : 'Project'}
-          spellCheck={false}
-          className={inputCls}
-        />
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <label className="text-[11px] uppercase tracking-wider text-slate-500">Working dir</label>
-        <div className="flex gap-2">
-          <input
-            value={cwd}
-            onChange={(e) => setCwd(e.target.value)}
-            placeholder="server default (workspace)"
-            spellCheck={false}
-            className={`${inputCls} flex-1`}
-          />
-          <button
-            onClick={() => void browseTo(cwd.trim() || undefined)}
-            className="rounded-lg border border-slate-700 bg-slate-800 px-3 py-2 text-xs text-slate-300 transition-colors hover:border-slate-600"
-          >
-            Browse
-          </button>
-        </div>
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <label className="text-[11px] uppercase tracking-wider text-slate-500">Provider</label>
-        <select
-          value={providerId}
-          onChange={(e) => setProviderId(e.target.value)}
-          className="rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-200 outline-none focus:border-sky-500"
-        >
-          <option value="">default ({defaultProviderName})</option>
-          {providers.map((p) => (
-            <option key={p.id} value={p.id}>
-              {p.name}
-              {p.is_default ? ' ★' : ''}
-            </option>
-          ))}
-        </select>
-      </div>
-
-      {browsing && dirs && (
-        <div className="overflow-hidden rounded-xl border border-slate-800 bg-slate-950">
-          <div className="truncate border-b border-slate-800 px-3 py-2 font-mono text-[11px] text-slate-500">
-            {dirs.path}
-          </div>
-          <ul className="max-h-44 overflow-y-auto p-1">
-            {dirs.parent !== dirs.path && (
-              <li>
-                <button
-                  onClick={() => void browseTo(dirs.parent)}
-                  className="w-full rounded-md px-2 py-1.5 text-left font-mono text-xs text-slate-400 hover:bg-slate-800"
-                >
-                  ⬆ ..
-                </button>
-              </li>
-            )}
-            {dirs.dirs.map((d) => (
-              <li key={d} className="flex items-center gap-1">
-                <button
-                  onClick={() => void browseTo(`${dirs.path}/${d}`)}
-                  className="flex-1 truncate rounded-md px-2 py-1.5 text-left font-mono text-xs text-slate-300 hover:bg-slate-800"
-                >
-                  {d}/
-                </button>
-                <button
-                  onClick={() => setCwd(`${dirs.path}/${d}`)}
-                  className="rounded-md px-2 py-1.5 text-xs text-sky-400 hover:bg-slate-800"
-                >
-                  use
-                </button>
-              </li>
-            ))}
-            {dirs.dirs.length === 0 && dirs.parent === dirs.path && (
-              <li className="px-2 py-1.5 text-xs text-slate-600">(no subdirectories)</li>
-            )}
-          </ul>
-        </div>
-      )}
-
-      {error && <p className="text-xs text-rose-400">{error}</p>}
-
-      <div className="flex items-center gap-2">
-        {editing && (
-          <button
-            onClick={remove}
-            className="rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 py-1.5 text-xs font-medium text-rose-300 transition-colors hover:bg-rose-500/20"
-          >
-            Delete project
-          </button>
-        )}
-        <div className="ml-auto flex gap-2">
-          <button
-            onClick={onClose}
-            className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-800"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={() => void save()}
-            disabled={saving}
-            className="rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-50"
-          >
-            {saving ? 'Saving…' : editing ? 'Save' : 'Create project'}
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* ---------- providers panel ---------- */
-
-function ProvidersPanel({
-  providers,
-  onClose,
-  onChanged,
-}: {
-  providers: Provider[];
-  onClose: () => void;
-  onChanged: () => Promise<void>;
-}) {
-  const [editing, setEditing] = useState<Provider | 'new' | null>(null);
-  const [formName, setFormName] = useState('');
-  const [formUrl, setFormUrl] = useState('');
-  const [formKey, setFormKey] = useState('');
-  const [formDefault, setFormDefault] = useState(false);
-  const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-  const [detecting, setDetecting] = useState<string | null>(null);
-
-  const openNew = () => {
-    setFormName('');
-    setFormUrl('');
-    setFormKey('');
-    setFormDefault(providers.length === 0);
-    setError(null);
-    setEditing('new');
-  };
-  const openEdit = (p: Provider) => {
-    setFormName(p.name);
-    setFormUrl(p.base_url);
-    setFormKey(p.api_key);
-    setFormDefault(p.is_default);
-    setError(null);
-    setEditing(p);
-  };
-
-  const save = async () => {
-    if (!formName.trim()) {
-      setError('name is required');
-      return;
-    }
-    setBusy(true);
-    setError(null);
-    const payload = {
-      name: formName,
-      baseUrl: formUrl,
-      apiKey: formKey,
-      isDefault: formDefault,
-    };
-    try {
-      if (editing === 'new') await api.createProvider(payload);
-      else if (editing) await api.updateProvider(editing.id, payload);
-      await onChanged();
-      setEditing(null);
-    } catch (err) {
-      setError(String(err instanceof Error ? err.message : err));
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  const detect = async (id: string) => {
-    setDetecting(id);
-    setError(null);
-    try {
-      await api.detectProvider(id);
-      await onChanged();
-    } catch (err) {
-      setError(String(err instanceof Error ? err.message : err));
-    } finally {
-      setDetecting(null);
-    }
-  };
-
-  const remove = async (p: Provider) => {
-    if (p.used_by > 0) return;
-    if (!window.confirm(`Delete provider "${p.name}"?`)) return;
-    try {
-      await api.deleteProvider(p.id);
-      await onChanged();
-    } catch (err) {
-      setError(String(err instanceof Error ? err.message : err));
-    }
-  };
-
-  const inputCls =
-    'rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-sky-500';
-
-  return (
-    <div className="flex max-h-[65%] flex-col gap-3 overflow-y-auto border-b border-slate-800 bg-slate-900/70 px-5 py-4">
-      <div className="flex items-center gap-2">
-        <h2 className="text-sm font-semibold text-slate-200">Providers</h2>
-        <button
-          onClick={openNew}
-          className="ml-auto rounded-lg bg-sky-500 px-3 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sky-400"
-        >
-          New provider
-        </button>
-        <button
-          onClick={onClose}
-          className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-800"
-        >
-          Close
-        </button>
-      </div>
-
-      {providers.length === 0 && (
-        <p className="text-xs text-slate-500">
-          No providers yet. Add one with a base URL + API key, or use the imported default.
-        </p>
-      )}
-
-      <ul className="flex flex-col gap-1.5">
-        {providers.map((p) => (
-          <li
-            key={p.id}
-            className="flex items-center gap-3 rounded-xl border border-slate-800 bg-slate-950 px-3 py-2"
-          >
-            <div className="min-w-0 flex-1">
-              <div className="flex items-center gap-2">
-                <span className="text-sm font-medium text-slate-200">{p.name}</span>
-                {p.is_default && (
-                  <span className="rounded-full border border-sky-500/40 bg-sky-500/10 px-1.5 text-[9px] font-semibold uppercase tracking-wider text-sky-300">
-                    default
-                  </span>
-                )}
-              </div>
-              <div className="truncate font-mono text-[10px] text-slate-500">
-                {p.base_url || 'api.openai.com (official)'}
-              </div>
-            </div>
-            <div className="w-40 shrink-0 text-right text-[11px]">
-              {p.models_error ? (
-                <span className="text-amber-400" title={p.models_error}>
-                  ⚠ detection failed
-                </span>
-              ) : p.models_checked_at ? (
-                <span className="text-slate-500">
-                  {p.models.length} models · {p.models_checked_at.slice(11, 16)}
-                </span>
-              ) : (
-                <span className="text-slate-600">not checked</span>
-              )}
-            </div>
-            <button
-              onClick={() => void detect(p.id)}
-              disabled={detecting === p.id}
-              title="Re-detect models"
-              className="rounded-lg p-1.5 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-sky-400 disabled:opacity-50"
-            >
-              {detecting === p.id ? <span className="inline-block animate-spin">↻</span> : '↻'}
-            </button>
-            <button
-              onClick={() => openEdit(p)}
-              title="Edit provider"
-              className="rounded-lg p-1.5 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-sky-400"
-            >
-              ⚙
-            </button>
-            <button
-              onClick={() => void remove(p)}
-              disabled={p.used_by > 0}
-              title={p.used_by > 0 ? `used by ${p.used_by} project(s)` : 'Delete provider'}
-              className="rounded-lg p-1.5 text-sm text-slate-400 transition-colors hover:bg-slate-800 hover:text-rose-400 disabled:cursor-default disabled:opacity-30"
-            >
-              🗑
-            </button>
-          </li>
-        ))}
-      </ul>
-
-      {editing !== null && (
-        <div className="flex flex-col gap-2.5 rounded-xl border border-slate-800 bg-slate-950 p-3">
-          <h3 className="text-xs font-semibold text-slate-300">
-            {editing === 'new' ? 'New provider' : `Edit: ${editing.name}`}
-          </h3>
-          <div className="grid grid-cols-2 gap-2.5">
-            <div className="flex flex-col gap-1">
-              <label className="text-[10px] uppercase tracking-wider text-slate-500">Name</label>
-              <input
-                value={formName}
-                onChange={(e) => setFormName(e.target.value)}
-                placeholder="OpenAI"
-                spellCheck={false}
-                className={inputCls}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-[10px] uppercase tracking-wider text-slate-500">
-                Base URL
-              </label>
-              <input
-                value={formUrl}
-                onChange={(e) => setFormUrl(e.target.value)}
-                placeholder="blank = api.openai.com/v1"
-                spellCheck={false}
-                className={inputCls}
-              />
-            </div>
-            <div className="flex flex-col gap-1">
-              <label className="text-[10px] uppercase tracking-wider text-slate-500">
-                API key
-              </label>
-              <input
-                type="password"
-                value={formKey}
-                onChange={(e) => setFormKey(e.target.value)}
-                placeholder="sk-…"
-                spellCheck={false}
-                className={inputCls}
-              />
-            </div>
-            <div className="flex items-end gap-2 pb-2">
-              <label className="flex items-center gap-2 text-xs text-slate-400">
-                <input
-                  type="checkbox"
-                  checked={formDefault}
-                  onChange={(e) => setFormDefault(e.target.checked)}
-                  className="accent-sky-500"
-                />
-                default provider
-              </label>
-            </div>
-          </div>
-          <p className="text-[11px] text-slate-600">
-            Models are detected from the provider on save (and via ↻). A failed detection keeps
-            the provider usable — type model names freely in project settings.
-          </p>
-          {error && <p className="text-xs text-rose-400">{error}</p>}
-          <div className="flex gap-2">
-            <button
-              onClick={() => setEditing(null)}
-              className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs text-slate-300 transition-colors hover:bg-slate-800"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={() => void save()}
-              disabled={busy}
-              className="rounded-lg bg-sky-500 px-4 py-1.5 text-xs font-semibold text-white transition-colors hover:bg-sky-400 disabled:opacity-50"
-            >
-              {busy ? 'Saving + detecting…' : 'Save provider'}
-            </button>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-/* ---------- items ---------- */
-
-function ItemView({ item, isLast, busy }: { item: Item; isLast: boolean; busy: boolean }) {
-  switch (item.kind) {
-    case 'user':
-      return (
-        <div className="self-end">
-          <div className="max-w-[85%] whitespace-pre-wrap break-words rounded-2xl rounded-br-md border border-sky-500/30 bg-sky-500/10 px-4 py-2.5 text-sm">
-            {item.content}
-          </div>
-        </div>
-      );
-    case 'assistant':
-      if (!item.content && isLast && busy) {
-        return (
-          <div className="self-start">
-            <div className="flex items-center gap-1.5 rounded-2xl rounded-bl-md border border-slate-800 bg-slate-900 px-4 py-3.5">
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400" />
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400 [animation-delay:150ms]" />
-              <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400 [animation-delay:300ms]" />
-            </div>
-          </div>
-        );
-      }
-      return (
-        <div className="self-start">
-          <div className="prose prose-sm prose-invert max-w-none break-words rounded-2xl rounded-bl-md border border-slate-800 bg-slate-900 px-4 py-3 !text-slate-200 [&_code]:rounded [&_code]:bg-slate-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-sky-300 [&_pre]:bg-slate-950 [&_pre]:text-slate-300">
-            <ReactMarkdown>{item.content || ' '}</ReactMarkdown>
-          </div>
-        </div>
-      );
-    case 'thinking':
-      return (
-        <div className="w-full max-w-[85%] self-start">
-          <details
-            open={!item.done}
-            className="group overflow-hidden rounded-xl border border-violet-500/20 bg-violet-500/5"
-          >
-            <summary className="flex cursor-pointer select-none list-none items-center gap-2 px-3 py-2 text-xs text-violet-300/80 [&::-webkit-details-marker]:hidden">
-              <span>💭</span>
-              <span className="font-medium">thinking</span>
-              {item.done ? (
-                <span className="ml-auto text-violet-400/50 transition-transform group-open:rotate-90">
-                  ▸
-                </span>
-              ) : (
-                <span className="ml-auto animate-pulse text-violet-300">thinking…</span>
-              )}
-            </summary>
-            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-violet-500/10 p-3 font-mono text-[11px] leading-relaxed text-violet-200/70">
-              {item.content}
-            </pre>
-          </details>
-        </div>
-      );
-    case 'tool':
-      return (
-        <div className="w-full max-w-[85%] self-start">
-          <details className="group overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-            <summary className="flex cursor-pointer select-none list-none items-center gap-2 px-3 py-2 text-xs text-slate-400 [&::-webkit-details-marker]:hidden">
-              <span className="w-4 text-center">{TOOL_ICONS[item.name] ?? '🔧'}</span>
-              <span className="font-semibold text-emerald-400">{item.name}</span>
-              {item.args !== undefined && (
-                <span className="truncate font-mono text-[11px] text-slate-600">
-                  {formatArgs(item.args)}
-                </span>
-              )}
-              {!item.result ? (
-                <span className="ml-auto animate-pulse text-[11px] text-sky-400">running…</span>
-              ) : (
-                <span className="ml-auto text-slate-600 transition-transform group-open:rotate-90">▸</span>
-              )}
-            </summary>
-            <div className="border-t border-slate-800">
-              {item.args !== undefined && (
-                <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-slate-500">
-                  {JSON.stringify(item.args, null, 2)}
-                </pre>
-              )}
-              {item.result && (
-                <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-dashed border-slate-800 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
-                  {item.result}
-                </pre>
-              )}
-            </div>
-          </details>
-        </div>
-      );
-    case 'error':
-      return (
-        <div className="self-start">
-          <div className="max-w-[85%] rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2.5 text-sm text-rose-300">
-            <strong>error:</strong> {item.message}
-          </div>
-        </div>
-      );
-  }
 }
