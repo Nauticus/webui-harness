@@ -191,7 +191,6 @@ export default function App() {
           hasActiveSession={sessions.activeSessionId !== null}
           loadError={loadError}
           onCreateProject={() => setDialog({ mode: 'create' })}
-          bottomRef={chat.bottomRef}
         />
 
         <Composer

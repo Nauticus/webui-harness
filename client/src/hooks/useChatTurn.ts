@@ -30,7 +30,6 @@ export function useChatTurn(opts: {
   const [context, setContext] = useState<ContextUsage | null>(null);
   const [pendingModels, setPendingModels] = useState<Record<string, string>>({});
   const streamedRef = useRef(false);
-  const bottomRef = useRef<HTMLDivElement>(null);
 
   const clear = useCallback(() => {
     setItems([]);
@@ -212,6 +211,5 @@ export function useChatTurn(opts: {
     pendingModelFor,
     clearPendingModel,
     onKeyDown,
-    bottomRef,
   };
 }
