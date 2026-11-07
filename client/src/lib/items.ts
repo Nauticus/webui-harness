@@ -7,12 +7,13 @@ export type Item =
   | { kind: 'thinking'; content: string; done: boolean }
   | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; diff?: string }
   | { kind: 'error'; message: string }
-  | { kind: 'compaction' };
+  | { kind: 'compaction' }
+  | { kind: 'stopped' };
 
 export function rowsToItems(rows: MessageRow[]): Item[] {
   const items: Item[] = [];
   for (const r of rows) {
-    let meta: { tool_calls?: unknown[]; name?: string; args?: unknown; reasoning?: string; diff?: string } = {};
+    let meta: { tool_calls?: unknown[]; name?: string; args?: unknown; reasoning?: string; diff?: string; stopped?: boolean } = {};
     if (r.meta) {
       try {
         meta = JSON.parse(r.meta);
@@ -28,6 +29,7 @@ export function rowsToItems(rows: MessageRow[]): Item[] {
     } else if (r.role === 'assistant') {
       if (meta.reasoning) items.push({ kind: 'thinking', content: meta.reasoning, done: true });
       if (r.content) items.push({ kind: 'assistant', content: r.content });
+      if (meta.stopped === true) items.push({ kind: 'stopped' });
     } else if (r.role === 'tool') {
       items.push({
         kind: 'tool',

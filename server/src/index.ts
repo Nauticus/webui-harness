@@ -390,7 +390,14 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
     Connection: 'keep-alive',
   });
   reply.hijack();
-  const send = (data: unknown) => reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+  // The user can stop the turn at any time by closing the stream (stop
+  // button / navigating away): that aborts the agent loop server-side too.
+  const stop = new AbortController();
+  reply.raw.on('close', () => stop.abort());
+  const send = (data: unknown) => {
+    if (reply.raw.destroyed) return; // client already gone (stopped)
+    reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
 
   let finalContent = '';
   let finalReasoning = '';
@@ -401,7 +408,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
     // Pre-turn compaction: the context may have grown past the threshold in
     // an earlier turn. Non-fatal — on failure the full context is sent.
     if (estimateTokens(messages) > compactionThreshold(contextWindow)) {
-      const c = await compactMessages({ messages, provider: providerCreds, model: model || DEFAULT_MODEL() }).catch((err) => {
+      const c = await compactMessages({ messages, provider: providerCreds, model: model || DEFAULT_MODEL(), signal: stop.signal }).catch((err) => {
         app.log.warn(`pre-turn compaction failed: ${String(err)}`);
         return undefined;
       });
@@ -421,12 +428,23 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
         });
       }
     }
-    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow })) {
+    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow, signal: stop.signal })) {
       send(ev);
       switch (ev.type) {
         case 'message.complete':
           finalContent = ev.content;
           if (ev.reasoning) finalReasoning = ev.reasoning;
+          break;
+        case 'message.stopped':
+          // Partial text from a stopped turn: persist it so the session
+          // keeps it across reloads (flagged for the UI).
+          if (ev.content) {
+            await history.appendRecord(id, session.project_id, {
+              role: 'assistant',
+              content: ev.content,
+              meta: { stopped: true, ...(ev.reasoning ? { reasoning: ev.reasoning } : {}) },
+            });
+          }
           break;
         case 'tool.round':
           await history.appendRecord(id, session.project_id, {

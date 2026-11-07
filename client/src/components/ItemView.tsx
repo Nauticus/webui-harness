@@ -45,6 +45,10 @@ export function ItemView({ item, isLast, busy }: { item: Item; isLast: boolean; 
           <span className="h-px flex-1 bg-slate-800" />
         </div>
       );
+    case 'stopped':
+      return (
+        <div className="self-start py-0.5 text-[11px] text-slate-500">⏹ stopped</div>
+      );
     case 'error':
       return (
         <div className="self-start">

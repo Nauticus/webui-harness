@@ -53,6 +53,7 @@ export function Composer({
   onInput,
   onKeyDown,
   onSend,
+  onStop,
 }: {
   model: string; // '' = auto (provider's default model)
   modelGroups: ModelGroup[];
@@ -65,6 +66,7 @@ export function Composer({
   onInput: (v: string) => void;
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => void;
+  onStop: () => void;
 }) {
   const [open, setOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
@@ -108,13 +110,23 @@ export function Composer({
             disabled={busy || disabled}
             className="max-h-40 min-h-[3rem] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-slate-600 disabled:opacity-50"
           />
-          <button
-            onClick={onSend}
-            disabled={busy || !input.trim() || disabled}
-            className="shrink-0 rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-400 disabled:cursor-default disabled:bg-slate-800 disabled:text-slate-500"
-          >
-            {busy ? '…' : 'Send'}
-          </button>
+          {busy ? (
+            <button
+              onClick={onStop}
+              title="Stop the agent (cancels the LLM call and kills any running command)"
+              className="shrink-0 rounded-xl bg-rose-500/90 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-rose-500"
+            >
+              ■ Stop
+            </button>
+          ) : (
+            <button
+              onClick={onSend}
+              disabled={!input.trim() || disabled}
+              className="shrink-0 rounded-xl bg-sky-500 px-4 py-2 text-sm font-semibold text-white transition-colors hover:bg-sky-400 disabled:cursor-default disabled:bg-slate-800 disabled:text-slate-500"
+            >
+              Send
+            </button>
+          )}
         </div>
 
         <div className="mt-1.5 flex items-center justify-between gap-3">

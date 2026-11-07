@@ -205,6 +205,7 @@ export default function App() {
           onInput={chat.setInput}
           onKeyDown={chat.onKeyDown}
           onSend={() => void chat.send()}
+          onStop={() => chat.abort()}
         />
       </main>
     </div>

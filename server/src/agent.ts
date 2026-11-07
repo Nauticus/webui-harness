@@ -1,4 +1,5 @@
 import OpenAI from 'openai';
+import { APIUserAbortError } from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { TOOLS, runTool } from './tools';
 import { providerClient, type ProviderCreds } from './providers';
@@ -48,6 +49,12 @@ export type AgentEvent =
       tokensAfter: number;
     }
   | { type: 'message.complete'; content: string; tokens: number; reasoning?: string }
+  /**
+   * Emitted when the user stops the turn while the model was still
+   * streaming a text reply. `content` holds the partial text so far, so
+   * the route can persist it.
+   */
+  | { type: 'message.stopped'; content: string; tokens: number; reasoning?: string }
   | { type: 'error'; message: string };
 
 /**
@@ -99,6 +106,15 @@ export async function* runAgentTurn(opts: {
   const window = opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   const threshold = compactionThreshold(opts.contextWindow);
 
+  /** True when the user requested a stop (the signal fired, or the SDK
+   *  surfaced the abort as its APIUserAbortError). */
+  const isAbort = (err: unknown) => opts.signal?.aborted === true || err instanceof APIUserAbortError;
+
+  /** Tool result stubbed for calls skipped because the turn was stopped:
+   *  history must stay valid, i.e. every assistant tool_call gets a
+   *  matching tool result. */
+  const STOPPED_NOTE = '(stopped by user before this ran)';
+
   type CompactionEvent = Extract<AgentEvent, { type: 'compaction' }>;
 
   /**
@@ -128,6 +144,8 @@ export async function* runAgentTurn(opts: {
   let step = 0;
   let overflowRetried = false;
   while (true) {
+    // Stopped between steps (e.g. during a tool round or compaction).
+    if (opts.signal?.aborted) return;
     const atGuard = step >= LOOP_GUARD;
     if (atGuard) {
       conversation.push({
@@ -148,6 +166,28 @@ export async function* runAgentTurn(opts: {
     // Report the current context size to the UI (also right after compaction).
     yield { type: 'context', tokens: estimateTokens(conversation), window, threshold };
 
+    let content = '';
+    let reasoning = '';
+    const rawCalls: { index: number; id?: string; name?: string; args: string }[] = [];
+
+    // If the turn was stopped while the model was streaming, persist what
+    // we have so far and end the turn without an error.
+    function* stopEvents(): Generator<AgentEvent> {
+      if (content) {
+        conversation.push({
+          role: 'assistant',
+          content,
+          ...(reasoning ? { reasoning } : {}),
+        });
+        yield {
+          type: 'message.stopped',
+          content,
+          tokens: estimateTokens(conversation),
+          ...(reasoning ? { reasoning } : {}),
+        };
+      }
+    }
+
     let stream;
     try {
       stream = await client.chat.completions.create(
@@ -160,6 +200,10 @@ export async function* runAgentTurn(opts: {
         { signal: opts.signal }
       );
     } catch (err) {
+      if (isAbort(err)) {
+        yield* stopEvents();
+        return;
+      }
       // One-shot overflow recovery: the real context window is smaller than
       // estimated — compact aggressively and retry the same step.
       if (!overflowRetried && !atGuard && /context|token|too large|too long|exceed|overflow/i.test(String(err))) {
@@ -173,44 +217,56 @@ export async function* runAgentTurn(opts: {
       throw err;
     }
 
-    let content = '';
-    let reasoning = '';
-    const rawCalls: { index: number; id?: string; name?: string; args: string }[] = [];
-
-    for await (const chunk of stream) {
-      const choice = chunk.choices[0] as
-        | { delta?: unknown; message?: { reasoning?: unknown; reasoning_details?: unknown } }
-        | undefined;
-      const delta = choice?.delta as
-        | { content?: string | null; tool_calls?: unknown[]; reasoning?: unknown }
-        | undefined;
-      if (typeof delta?.reasoning === 'string' && delta.reasoning) {
-        reasoning += delta.reasoning;
-        yield { type: 'thinking.delta', text: delta.reasoning };
-      }
-      if (delta?.content) {
-        content += delta.content;
-        yield { type: 'message.delta', text: delta.content };
-      }
-      for (const tc of (delta?.tool_calls ?? []) as {
-        index: number;
-        id?: string;
-        function?: { name?: string; arguments?: string };
-      }[]) {
-        const slot = rawCalls[tc.index] ?? (rawCalls[tc.index] = { index: tc.index, args: '' });
-        if (tc.id) slot.id = tc.id;
-        if (tc.function?.name) slot.name = tc.function.name;
-        if (tc.function?.arguments) slot.args += tc.function.arguments;
-      }
-      // Final chunk: some providers deliver the (encrypted or plain) reasoning there.
-      const finMsg = choice?.message;
-      if (finMsg && !reasoning) {
-        if (typeof finMsg.reasoning === 'string' && finMsg.reasoning) {
-          reasoning = finMsg.reasoning;
-        } else {
-          reasoning = reasoningDetailsText(finMsg.reasoning_details);
+    try {
+      for await (const chunk of stream) {
+        const choice = chunk.choices[0] as
+          | { delta?: unknown; message?: { reasoning?: unknown; reasoning_details?: unknown } }
+          | undefined;
+        const delta = choice?.delta as
+          | { content?: string | null; tool_calls?: unknown[]; reasoning?: unknown }
+          | undefined;
+        if (typeof delta?.reasoning === 'string' && delta.reasoning) {
+          reasoning += delta.reasoning;
+          yield { type: 'thinking.delta', text: delta.reasoning };
+        }
+        if (delta?.content) {
+          content += delta.content;
+          yield { type: 'message.delta', text: delta.content };
+        }
+        for (const tc of (delta?.tool_calls ?? []) as {
+          index: number;
+          id?: string;
+          function?: { name?: string; arguments?: string };
+        }[]) {
+          const slot = rawCalls[tc.index] ?? (rawCalls[tc.index] = { index: tc.index, args: '' });
+          if (tc.id) slot.id = tc.id;
+          if (tc.function?.name) slot.name = tc.function.name;
+          if (tc.function?.arguments) slot.args += tc.function.arguments;
+        }
+        // Final chunk: some providers deliver the (encrypted or plain) reasoning there.
+        const finMsg = choice?.message;
+        if (finMsg && !reasoning) {
+          if (typeof finMsg.reasoning === 'string' && finMsg.reasoning) {
+            reasoning = finMsg.reasoning;
+          } else {
+            reasoning = reasoningDetailsText(finMsg.reasoning_details);
+          }
         }
       }
+    } catch (err) {
+      if (isAbort(err)) {
+        yield* stopEvents();
+        return;
+      }
+      throw err;
+    }
+
+    // The OpenAI SDK ends the stream cleanly when the request is aborted
+    // (it swallows the AbortError by design), so a stop mid-stream shows
+    // up as an abruptly finished stream rather than a throw.
+    if (opts.signal?.aborted) {
+      yield* stopEvents();
+      return;
     }
 
     const calls = rawCalls.filter((c) => c.id && c.name);
@@ -234,7 +290,23 @@ export async function* runAgentTurn(opts: {
       });
       yield { type: 'tool.round', content, toolCalls: stored, ...(reasoning ? { reasoning } : {}) };
 
-      for (const call of stored) {
+      for (let i = 0; i < stored.length; i++) {
+        // Stopped mid-batch: stub every remaining call so the persisted
+        // history stays valid (each tool_call has a tool result).
+        if (opts.signal?.aborted) {
+          for (let j = i; j < stored.length; j++) {
+            const c = stored[j]!;
+            yield { type: 'tool.result', id: c.id, name: c.function.name, result: STOPPED_NOTE };
+            conversation.push({
+              role: 'tool',
+              tool_call_id: c.id,
+              content: STOPPED_NOTE,
+              name: c.function.name,
+            });
+          }
+          break;
+        }
+        const call = stored[i]!;
         let args: Record<string, unknown>;
         try {
           args = JSON.parse(call.function.arguments || '{}') as Record<string, unknown>;
@@ -242,7 +314,7 @@ export async function* runAgentTurn(opts: {
           args = { _invalid_json: call.function.arguments };
         }
         yield { type: 'tool.start', id: call.id, name: call.function.name, args };
-        const result = await runTool(call.function.name, args, opts.workspace);
+        const result = await runTool(call.function.name, args, opts.workspace, opts.signal);
         yield {
           type: 'tool.result',
           id: call.id,
@@ -257,6 +329,7 @@ export async function* runAgentTurn(opts: {
           name: call.function.name,
         });
       }
+      if (opts.signal?.aborted) return; // stopped mid-batch — end the turn
       step++;
       continue;
     }

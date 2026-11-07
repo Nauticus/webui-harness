@@ -159,12 +159,14 @@ export const api = {
 export async function streamTurn(
   sessionId: string,
   content: string,
-  onEvent: (ev: ServerEvent) => void
+  onEvent: (ev: ServerEvent) => void,
+  signal?: AbortSignal
 ): Promise<void> {
   const res = await fetch(`/api/sessions/${sessionId}/messages`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ content }),
+    signal,
   });
   if (!res.ok || !res.body) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };

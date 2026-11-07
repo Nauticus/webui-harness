@@ -30,6 +30,7 @@ export function useChatTurn(opts: {
   const [context, setContext] = useState<ContextUsage | null>(null);
   const [pendingModels, setPendingModels] = useState<Record<string, string>>({});
   const streamedRef = useRef(false);
+  const controllerRef = useRef<AbortController | null>(null);
 
   const clear = useCallback(() => {
     setItems([]);
@@ -90,6 +91,8 @@ export function useChatTurn(opts: {
     setInput('');
     setBusy(true);
     streamedRef.current = false;
+    const controller = new AbortController();
+    controllerRef.current = controller;
     // Only the user item is pre-created; thinking/assistant/tool blocks are
     // appended as they arrive so the UI matches the server's stream order.
     setItems((prev) => [...prev, { kind: 'user', content }]);
@@ -158,6 +161,19 @@ export function useChatTurn(opts: {
               setContext((c) => (c ? { ...c, tokens: Number(ev.tokens) } : c));
             }
             break;
+          case 'message.stopped':
+            // Server-side record of a stop during a non-streamed reply:
+            // show the partial text plus the stopped marker.
+            setItems((prev) => {
+              const next = prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it));
+              if (String(ev.content) && !streamedRef.current) next.push({ kind: 'assistant', content: String(ev.content) });
+              next.push({ kind: 'stopped' });
+              return next;
+            });
+            if (typeof ev.tokens === 'number') {
+              setContext((c) => (c ? { ...c, tokens: Number(ev.tokens) } : c));
+            }
+            break;
           case 'error':
             setItems((prev) => [...prev, { kind: 'error', message: String(ev.message) }]);
             break;
@@ -181,14 +197,27 @@ export function useChatTurn(opts: {
       });
       await opts.refreshSessions(opts.activeProjectId);
     } catch (err) {
+      // A user stop aborts the fetch; that is not an error (the stop marker
+      // was already added by abort()).
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       setItems((prev) => [
         ...prev,
         { kind: 'error', message: String(err instanceof Error ? err.message : err) },
       ]);
     } finally {
+      controllerRef.current = null;
       setBusy(false);
     }
   }, [input, busy, opts]);
+
+  /** Stop the running turn: aborts the stream (the server detects the closed
+   *  connection and stops the agent loop, killing any running command). */
+  const abort = useCallback(() => {
+    if (!controllerRef.current) return;
+    controllerRef.current.abort();
+    setItems((prev) => [...prev, { kind: 'stopped' }]);
+    setBusy(false);
+  }, []);
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -203,6 +232,7 @@ export function useChatTurn(opts: {
     setInput,
     busy,
     send,
+    abort,
     context,
     modelValue,
     setModel,

@@ -217,36 +217,50 @@ async function atomicWrite(abs: string, content: string): Promise<void> {
   }
 }
 
-function runBash(command: string, timeoutSec: number, workspace: string): Promise<string> {
+function runBash(
+  command: string,
+  timeoutSec: number,
+  workspace: string,
+  signal?: AbortSignal
+): Promise<string> {
   return new Promise((resolve) => {
     const child = spawn('bash', ['-c', command], {
       cwd: workspace,
       env: { ...process.env },
     });
     let out = '';
+    let done = false;
     let timer: NodeJS.Timeout | undefined;
-    const finish = () => {
+    const finish = (suffix?: string) => {
+      if (done) return;
+      done = true;
       if (timer) clearTimeout(timer);
-      resolve(truncate(out || '(no output)'));
+      signal?.removeEventListener('abort', onAbort);
+      const text = suffix ? `${out ? out + '\n' : ''}${suffix}` : out || '(no output)';
+      resolve(truncate(text));
+    };
+    const onAbort = () => {
+      child.kill('SIGKILL');
+      finish('[stopped by user]');
     };
     timer = setTimeout(() => {
       child.kill('SIGKILL');
-      resolve(truncate(`${out}\n[timed out after ${timeoutSec}s]`));
+      finish(`[timed out after ${timeoutSec}s]`);
     }, Math.min(timeoutSec, 120) * 1000);
+    if (signal?.aborted) onAbort();
+    else signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout.on('data', (d) => (out += d.toString()));
     child.stderr.on('data', (d) => (out += d.toString()));
-    child.on('close', finish);
-    child.on('error', (err) => {
-      if (timer) clearTimeout(timer);
-      resolve(`bash error: ${String(err)}`);
-    });
+    child.on('close', () => finish());
+    child.on('error', (err) => finish(`bash error: ${String(err)}`));
   });
 }
 
 export async function runTool(
   name: string,
   args: Record<string, unknown>,
-  workspace: string
+  workspace: string,
+  signal?: AbortSignal
 ): Promise<ToolResult> {
   try {
     switch (name) {
@@ -254,7 +268,7 @@ export async function runTool(
         const command = String(args.command ?? '');
         if (!command.trim()) return { output: 'error: empty command' };
         const timeout = Number.isFinite(Number(args.timeout)) ? Number(args.timeout) : 30;
-        return { output: await runBash(command, timeout, workspace) };
+        return { output: await runBash(command, timeout, workspace, signal) };
       }
       case 'read_file': {
         const abs = safePath(workspace, String(args.path ?? ''));
