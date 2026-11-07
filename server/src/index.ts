@@ -72,7 +72,7 @@ function validateEffort(effort: unknown): ReasoningEffort | undefined {
   if (effort === undefined) return undefined;
   if (!isReasoningEffort(effort)) {
     throw Object.assign(
-      new Error(`reasoningEffort must be one of: auto (''), low, medium, high`),
+      new Error(`reasoningEffort must be one of: auto (''), low, medium, high, xhigh`),
       { statusCode: 400 }
     );
   }

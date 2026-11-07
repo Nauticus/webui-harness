@@ -193,8 +193,18 @@ test('reasoning effort: session effort reaches the LLM, auto sends nothing, mid-
   await sendMessage(s1.id, 'again');
   assert.equal(capturedBody.reasoning_effort, 'low');
 
+  // xhigh: accepted at the boundary and passed through as-is.
+  await fetch(`${APP_BASE}/api/sessions/${s1.id}`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ reasoningEffort: 'xhigh' }),
+  });
+  capturedBody = {};
+  await sendMessage(s1.id, 'once more');
+  assert.equal(capturedBody.reasoning_effort, 'xhigh');
+
   // Invalid values are rejected at the boundary.
-  for (const bad of ['bogus', 'LOW', 'extra']) {
+  for (const bad of ['bogus', 'LOW', 'xhigh-ish', 'Xhigh']) {
     const res = await fetch(`${APP_BASE}/api/sessions/${s1.id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },

@@ -48,6 +48,7 @@ const EFFORT_OPTIONS: { value: string; label: string; hint: string }[] = [
   { value: 'low', label: 'low', hint: 'quick, cheap' },
   { value: 'medium', label: 'medium', hint: 'balanced' },
   { value: 'high', label: 'high', hint: 'deep reasoning' },
+  { value: 'xhigh', label: 'xhigh', hint: 'deepest' },
 ];
 
 export function Composer({
