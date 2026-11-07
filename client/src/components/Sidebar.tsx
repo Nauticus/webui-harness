@@ -4,6 +4,7 @@ export function Sidebar({
   sessions,
   activeProject,
   activeSessionId,
+  runningSessionId,
   onNewSession,
   onSelect,
   onRemove,
@@ -11,6 +12,7 @@ export function Sidebar({
   sessions: Session[];
   activeProject: Project | null;
   activeSessionId: string | null;
+  runningSessionId: string | null;
   onNewSession: () => void;
   onSelect: (id: string) => void;
   onRemove: (id: string) => void;
@@ -47,7 +49,12 @@ export function Sidebar({
                       : 'text-slate-400 hover:bg-slate-800/50 hover:text-slate-200'
                   }`}
                 >
-                  <span className="block truncate text-sm">{s.title}</span>
+                  <span className="flex items-center gap-1.5">
+                    {s.id === runningSessionId && (
+                      <span className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-sky-400" />
+                    )}
+                    <span className="truncate text-sm">{s.title}</span>
+                  </span>
                   <span className="block truncate text-[10px] text-slate-600">{s.created_at}</span>
                 </button>
                 <button

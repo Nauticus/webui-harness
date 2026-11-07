@@ -19,7 +19,7 @@ export function useChatTurn(opts: {
   activeSessionId: string | null;
   activeSessionModel: string; // '' = auto
   activeSessionEffort: string; // '' = auto
-  refreshSessions: (projectId: string) => Promise<void>;
+  refreshSessions: (projectId: string) => Promise<unknown>;
   /** called with the new session id when the first message creates one */
   onSessionCreated: (id: string) => void;
   /** update the local session row after a model/effort patch */
@@ -29,12 +29,51 @@ export function useChatTurn(opts: {
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
+  /** The session whose turn is currently streaming (survives navigation). */
+  const [runningSessionId, setRunningSessionId] = useState<string | null>(null);
   const [context, setContext] = useState<ContextUsage | null>(null);
   const [pendingModels, setPendingModels] = useState<Record<string, string>>({});
   const [pendingEfforts, setPendingEfforts] = useState<Record<string, string>>({});
   const streamedRef = useRef(false);
   const streamedSessionId = useRef<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
+  /** The session currently displayed in `items` (set by viewSession). */
+  const viewSessionId = useRef<string | null>(null);
+  /** Authoritative in-flight items for the running turn, kept even when
+   *  the user is viewing a different session. */
+  const liveRef = useRef<Item[]>([]);
+  const itemsRef = useRef<Item[]>([]);
+  itemsRef.current = items;
+
+  /** Apply a mutation to the running turn's live items; mirror to `items`
+   *  state only when the running session is the one on screen. */
+  const applyItems = useCallback((updater: (prev: Item[]) => Item[]) => {
+    liveRef.current = updater(liveRef.current);
+    if (streamedSessionId.current === viewSessionId.current) {
+      setItems(liveRef.current);
+    }
+  }, []);
+
+  /** Switch the display to a session (or the session-less project view).
+   *  A session with an in-flight turn shows its live items; anything else
+   *  loads from the server. The running turn is never aborted. */
+  const viewSession = useCallback(async (sessionId: string | null) => {
+    viewSessionId.current = sessionId;
+    if (sessionId === null) {
+      setItems([]);
+      setContext(null);
+      return;
+    }
+    if (streamedSessionId.current === sessionId) {
+      setItems(liveRef.current);
+      return;
+    }
+    const { messages } = await api.getSession(sessionId);
+    // The route may have moved on while fetching; only apply if still shown.
+    if (viewSessionId.current === sessionId) {
+      setItems(rowsToItems(messages));
+    }
+  }, []);
 
   const clear = useCallback(() => {
     setItems([]);
@@ -52,11 +91,6 @@ export function useChatTurn(opts: {
       delete next[projectId];
       return next;
     });
-  }, []);
-
-  const loadHistory = useCallback(async (sessionId: string) => {
-    const { messages } = await api.getSession(sessionId);
-    setItems(rowsToItems(messages));
   }, []);
 
   /** The composer select value: session's model, else the pending pick. */
@@ -116,26 +150,31 @@ export function useChatTurn(opts: {
       });
       await opts.refreshSessions(opts.activeProjectId);
       sessionId = s.id;
+      // Claim the turn BEFORE navigating: the route-change effect that views
+      // this session must see it as in-flight, not fetch its (empty) history.
+      streamedSessionId.current = sessionId;
       opts.onSessionCreated(s.id);
-      setItems([]);
       setContext(null); // fresh session: no history context yet
     }
     setInput('');
     setBusy(true);
+    setRunningSessionId(sessionId);
     streamedRef.current = false;
     const controller = new AbortController();
     controllerRef.current = controller;
     streamedSessionId.current = sessionId;
-    // Only the user item is pre-created; thinking/assistant/tool blocks are
-    // appended as they arrive so the UI matches the server's stream order.
-    setItems((prev) => [...prev, { kind: 'user', content }]);
+    // Seed the live buffer with what is currently on screen (history or an
+    // empty new session), then append the user item like every other block:
+    // the UI matches the server's stream order.
+    liveRef.current = sessionId === viewSessionId.current ? [...itemsRef.current] : [];
+    applyItems((prev) => [...prev, { kind: 'user', content }]);
 
     try {
       await streamTurn(sessionId, content, (ev) => {
         switch (ev.type) {
           case 'message.delta': {
             streamedRef.current = true;
-            setItems((prev) => {
+            applyItems((prev) => {
               const next = prev.map((it) =>
                 it.kind === 'thinking' && !it.done ? { ...it, done: true } : it
               );
@@ -150,7 +189,7 @@ export function useChatTurn(opts: {
             break;
           }
           case 'thinking.delta':
-            setItems((prev) => {
+            applyItems((prev) => {
               const next = [...prev];
               const last = next[next.length - 1];
               if (last && last.kind === 'thinking' && !last.done) {
@@ -162,16 +201,16 @@ export function useChatTurn(opts: {
             });
             break;
           case 'tool.start':
-            setItems((prev) =>
+            applyItems((prev) =>
               prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it))
             );
-            setItems((prev) => [
+            applyItems((prev) => [
               ...prev,
               { kind: 'tool', id: String(ev.id), name: String(ev.name), args: ev.args },
             ]);
             break;
           case 'tool.result':
-            setItems((prev) =>
+            applyItems((prev) =>
               prev.map((it) =>
                 it.kind === 'tool' && it.id === String(ev.id)
                   ? {
@@ -184,11 +223,11 @@ export function useChatTurn(opts: {
             );
             break;
           case 'message.complete':
-            setItems((prev) =>
+            applyItems((prev) =>
               prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it))
             );
             if (String(ev.content) && !streamedRef.current) {
-              setItems((prev) => [...prev, { kind: 'assistant', content: String(ev.content) }]);
+              applyItems((prev) => [...prev, { kind: 'assistant', content: String(ev.content) }]);
             }
             if (typeof ev.tokens === 'number') {
               setContext((c) => (c ? { ...c, tokens: Number(ev.tokens) } : c));
@@ -197,7 +236,7 @@ export function useChatTurn(opts: {
           case 'message.stopped':
             // Server-side record of a stop during a non-streamed reply:
             // show the partial text plus the stopped marker.
-            setItems((prev) => {
+            applyItems((prev) => {
               const next = prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it));
               if (String(ev.content) && !streamedRef.current) next.push({ kind: 'assistant', content: String(ev.content) });
               next.push({ kind: 'stopped' });
@@ -208,18 +247,18 @@ export function useChatTurn(opts: {
             }
             break;
           case 'error':
-            setItems((prev) => [...prev, { kind: 'error', message: String(ev.message) }]);
+            applyItems((prev) => [...prev, { kind: 'error', message: String(ev.message) }]);
             break;
           case 'compaction.start':
             // Compaction began: the old part of the context is being summarized.
-            setItems((prev) => [
+            applyItems((prev) => [
               ...prev,
               { kind: 'compaction', status: 'running', tokensBefore: Number(ev.tokensBefore) },
             ]);
             break;
           case 'compaction.progress':
             // The summarizer is still writing; live token count so far.
-            setItems((prev) => {
+            applyItems((prev) => {
               for (let i = prev.length - 1; i >= 0; i--) {
                 const it = prev[i]!;
                 if (it.kind === 'compaction' && it.status === 'running') {
@@ -234,7 +273,7 @@ export function useChatTurn(opts: {
           case 'compaction':
             // Compaction finished: fill in the running item (or add a fresh
             // one if the start event was missed), with the produced summary.
-            setItems((prev) => {
+            applyItems((prev) => {
               const done: Item = {
                 kind: 'compaction',
                 status: 'done',
@@ -272,21 +311,22 @@ export function useChatTurn(opts: {
       // A user stop aborts the fetch; that is not an error (the stop marker
       // was already added by abort()).
       if (err instanceof DOMException && err.name === 'AbortError') return;
-      setItems((prev) => [
+      applyItems((prev) => [
         ...prev,
         { kind: 'error', message: String(err instanceof Error ? err.message : err) },
       ]);
     } finally {
       // A compaction interrupted by stop/error never gets its end event:
       // settle the running card so it doesn't pulse forever.
-      setItems((prev) =>
+      applyItems((prev) =>
         prev.map((it) => (it.kind === 'compaction' && it.status === 'running' ? { ...it, status: 'done' as const } : it))
       );
       controllerRef.current = null;
       streamedSessionId.current = null;
+      setRunningSessionId(null);
       setBusy(false);
     }
-  }, [input, busy, opts]);
+  }, [input, busy, applyItems, opts]);
 
   /** Stop the running turn: aborts the local stream AND explicitly stops the
    *  server-side agent (the explicit call is what works when a dev proxy
@@ -298,7 +338,7 @@ export function useChatTurn(opts: {
     if (sessionId) {
       fetch(`/api/sessions/${sessionId}/stop`, { method: 'POST' }).catch(() => {});
     }
-    setItems((prev) => [...prev, { kind: 'stopped' }]);
+    applyItems((prev) => [...prev, { kind: 'stopped' }]);
     setBusy(false);
   }, []);
 
@@ -314,6 +354,7 @@ export function useChatTurn(opts: {
     input,
     setInput,
     busy,
+    runningSessionId,
     send,
     abort,
     context,
@@ -321,7 +362,7 @@ export function useChatTurn(opts: {
     setModel,
     effortValue,
     setEffort,
-    loadHistory,
+    viewSession,
     clear,
     pendingModelFor,
     clearPendingModel,
