@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
-import type { Project } from '../api';
+import type { Project, Skill } from '../api';
 import type { ContextUsage } from '../api';
 import type { Item } from '../lib/items';
 import { ItemView } from './ItemView';
@@ -17,6 +17,7 @@ export function ChatView({
   loadError,
   onCreateProject,
   context,
+  skills,
 }: {
   items: Item[];
   busy: boolean;
@@ -26,6 +27,7 @@ export function ChatView({
   loadError: string | null;
   onCreateProject: () => void;
   context?: ContextUsage | null;
+  skills?: Skill[];
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [atEnd, setAtEnd] = useState(true);
@@ -121,6 +123,7 @@ export function ChatView({
                   item={items[vi.index]!}
                   isLast={vi.index === items.length - 1}
                   busy={busy}
+                  skills={skills}
                 />
               </div>
             </div>

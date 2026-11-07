@@ -98,3 +98,25 @@ export function toolTarget(name: string, args: unknown): string {
       return formatArgs(args);
   }
 }
+
+/**
+ * Explicit skill invocation in a user message: `/skill:name [task]`.
+ * Mirrors the server's INVOCATION_RE.
+ */
+export function parseSkillInvocation(content: string): { name: string; task: string } | null {
+  const m = /^\/skill:([a-z0-9]+(?:-[a-z0-9]+)*)(?:[ \t]+([\s\S]*?))[ \t]*$/.exec(content.trim());
+  if (!m) return null;
+  return { name: m[1]!, task: (m[2] ?? '').trim() };
+}
+
+/** True when a file path points at a SKILL.md (absolute or relative). */
+export function isSkillFile(path: string): boolean {
+  const base = path.split(/[\\/]/).pop() ?? '';
+  return base === 'SKILL.md' || base === 'skill.md';
+}
+
+/** Best-effort skill directory name from a SKILL.md path. */
+export function skillDirName(path: string): string {
+  const parts = path.split(/[\\/]/).filter(Boolean);
+  return parts.length > 1 ? (parts[parts.length - 2] ?? '') : '';
+}

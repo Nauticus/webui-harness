@@ -4,6 +4,7 @@ import { api } from './api';
 import { useProjects } from './hooks/useProjects';
 import { useSessions } from './hooks/useSessions';
 import { useProviders } from './hooks/useProviders';
+import { useSkills } from './hooks/useSkills';
 import { useChatTurn } from './hooks/useChatTurn';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
@@ -40,6 +41,9 @@ export default function App() {
   const navigate = useNavigate();
   const projects = useProjects();
   const sessions = useSessions();
+  // Skills for the active workspace (global + project) — composer
+  // autocomplete, skill chips, and SkillCards in the chat.
+  const { skills } = useSkills(projectId ?? null);
   const providers = useProviders();
   const [dialog, setDialog] = useState<ProjectDialogState | null>(null);
   const [providersOpen, setProvidersOpen] = useState(false);
@@ -255,6 +259,7 @@ export default function App() {
           loadError={loadError}
           onCreateProject={() => setDialog({ mode: 'create' })}
           context={chat.context}
+          skills={skills}
         />
         {chat.context && chat.context.window > 0 && (
           <ContextBar tokens={chat.context.tokens} window={chat.context.window} threshold={chat.context.threshold} />
@@ -273,6 +278,7 @@ export default function App() {
           onKeyDown={chat.onKeyDown}
           onSend={() => void chat.send()}
           onStop={() => chat.abort()}
+          skills={skills}
         />
       </main>
     </div>

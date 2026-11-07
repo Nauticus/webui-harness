@@ -12,9 +12,13 @@ export const DEFAULT_WORKSPACE = path.resolve(
   process.env.AGENT_WORKSPACE_DIR ?? path.join(process.cwd(), 'workspace')
 );
 
-function safePath(workspace: string, p: string): string {
+function safePath(workspace: string, p: string, extraReadRoots: string[] = []): string {
   const abs = path.resolve(workspace, p);
-  if (abs !== workspace && !abs.startsWith(workspace + path.sep)) {
+  const inside = (root: string) => {
+    const r = path.resolve(root);
+    return abs === r || abs.startsWith(r + path.sep);
+  };
+  if (!inside(workspace) && !extraReadRoots.some(inside)) {
     throw new Error(`path escapes working directory: ${p}`);
   }
   return abs;
@@ -50,7 +54,8 @@ export const TOOLS: ToolSpec[] = [
     type: 'function',
     function: {
       name: 'read_file',
-      description: 'Read a text file from the workspace. Path relative to workspace root.',
+      description:
+        'Read a text file from the workspace (or an approved skill directory). Path relative to workspace root.',
       parameters: {
         type: 'object',
         properties: {
@@ -118,7 +123,7 @@ export const TOOLS: ToolSpec[] = [
     type: 'function',
     function: {
       name: 'list_dir',
-      description: 'List directory entries in the workspace.',
+      description: 'List directory entries in the workspace (or an approved skill directory).',
       parameters: {
         type: 'object',
         properties: {
@@ -260,7 +265,10 @@ export async function runTool(
   name: string,
   args: Record<string, unknown>,
   workspace: string,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  /** Extra directories readable by read_file/list_dir (skill directories).
+   *  Writes and edits stay strictly inside the workspace. */
+  extraReadRoots: string[] = []
 ): Promise<ToolResult> {
   try {
     switch (name) {
@@ -271,7 +279,7 @@ export async function runTool(
         return { output: await runBash(command, timeout, workspace, signal) };
       }
       case 'read_file': {
-        const abs = safePath(workspace, String(args.path ?? ''));
+        const abs = safePath(workspace, String(args.path ?? ''), extraReadRoots);
         const raw = await fs.readFile(abs, 'utf8');
         const lines = raw.split('\n');
         const offset = Math.max(1, Number(args.offset ?? 1));
@@ -349,7 +357,7 @@ export async function runTool(
         return { output: diff ? `${summary}\n${diff}` : summary, diff };
       }
       case 'list_dir': {
-        const abs = safePath(workspace, String(args.path ?? '.'));
+        const abs = safePath(workspace, String(args.path ?? '.'), extraReadRoots);
         const entries = await fs.readdir(abs, { withFileTypes: true });
         if (entries.length === 0) return { output: '(empty)' };
         return {

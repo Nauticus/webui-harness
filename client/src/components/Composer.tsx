@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
-import type { ModelGroup } from '../api';
+import type { ModelGroup, Skill } from '../api';
 
 /** 128000 -> '128k', 1000000 -> '1M'. */
 export function formatContextWindow(tokens: number): string {
@@ -38,6 +38,7 @@ export function Composer({
   onKeyDown,
   onSend,
   onStop,
+  skills,
 }: {
   model: string; // '' = auto (provider's default model)
   modelGroups: ModelGroup[];
@@ -52,11 +53,62 @@ export function Composer({
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => void;
   onStop: () => void;
+  skills?: Skill[];
 }) {
   const [open, setOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
   const [effortOpen, setEffortOpen] = useState(false);
   const effortRef = useRef<HTMLDivElement>(null);
+  const [acIndex, setAcIndex] = useState(0);
+
+  // /skill: autocomplete — a single leading "/token" (no spaces yet).
+  // The server expands /skill:name [task] into the skill's instructions.
+  const acQuery = (() => {
+    const t = input.trim();
+    if (!t.startsWith('/') || /\s/.test(t)) return null;
+    let q = t.slice(1);
+    if (q.startsWith('skill:')) q = q.slice('skill:'.length);
+    return q.toLowerCase();
+  })();
+  const acMatches =
+    acQuery === null
+      ? []
+      : (skills ?? []).filter(
+          (sk) => acQuery === '' || sk.name.startsWith(acQuery) || sk.name.includes(acQuery)
+        );
+  const acOpen = acQuery !== null && acMatches.length > 0 && !busy && !disabled;
+  useEffect(() => {
+    setAcIndex(0);
+  }, [acQuery]);
+  const insertSkill = (skill: Skill) => {
+    onInput(`/skill:${skill.name} `);
+  };
+  const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (acOpen) {
+      if (e.key === 'ArrowDown') {
+        e.preventDefault();
+        setAcIndex((i) => (i + 1) % acMatches.length);
+        return;
+      }
+      if (e.key === 'ArrowUp') {
+        e.preventDefault();
+        setAcIndex((i) => (i - 1 + acMatches.length) % acMatches.length);
+        return;
+      }
+      if (e.key === 'Tab' || e.key === 'Enter') {
+        e.preventDefault();
+        const m = acMatches[acIndex] ?? acMatches[0];
+        if (m) insertSkill(m);
+        return;
+      }
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        onInput('');
+        return;
+      }
+    }
+    onKeyDown(e);
+  };
 
   // Close the popovers on outside click or Escape.
   useEffect(() => {
@@ -92,11 +144,43 @@ export function Composer({
   return (
     <footer className="border-t border-slate-800 px-5 py-4">
       <div className="mx-auto w-full max-w-3xl">
+        <div className="relative">
+          {acOpen && (
+            <div className="absolute bottom-full left-0 right-0 z-20 mb-1.5 max-h-64 overflow-auto rounded-xl border border-slate-700 bg-slate-900 py-1 shadow-xl">
+              <div className="px-3 py-1 text-[10px] font-medium uppercase tracking-wide text-slate-600">
+                Skills — Enter to insert
+              </div>
+              {acMatches.map((sk, i) => (
+                <button
+                  key={sk.name}
+                  type="button"
+                  onMouseEnter={() => setAcIndex(i)}
+                  onClick={() => insertSkill(sk)}
+                  className={`flex w-full items-baseline gap-2 px-3 py-1.5 text-left ${
+                    i === acIndex ? 'bg-violet-500/20' : ''
+                  }`}
+                >
+                  <span className="text-xs text-violet-400">✦</span>
+                  <span className="shrink-0 font-mono text-xs text-slate-200">{sk.name}</span>
+                  <span className="truncate text-xs text-slate-500">{sk.description}</span>
+                  <span
+                    className={`ml-auto shrink-0 rounded-full px-1.5 py-0.5 text-[10px] ${
+                      sk.source === 'project'
+                        ? 'bg-sky-500/20 text-sky-300'
+                        : 'bg-slate-800 text-slate-500'
+                    }`}
+                  >
+                    {sk.source}
+                  </span>
+                </button>
+              ))}
+            </div>
+          )}
         <div className="flex items-end gap-2 rounded-2xl border border-slate-700 bg-slate-900 p-2 transition-colors focus-within:border-sky-500/60">
           <textarea
             value={input}
             onChange={(e) => onInput(e.target.value)}
-            onKeyDown={onKeyDown}
+            onKeyDown={handleKeyDown}
             placeholder={placeholder}
             rows={2}
             disabled={busy || disabled}
@@ -119,6 +203,7 @@ export function Composer({
               Send
             </button>
           )}
+          </div>
         </div>
 
         <div className="mt-1.5 flex items-center justify-between gap-3">
@@ -245,7 +330,7 @@ export function Composer({
             </div>
           </div>
           <div className="flex items-center gap-3">
-            <p className="text-[11px] text-slate-600">Enter to send · Shift+Enter for newline</p>
+            <p className="text-[11px] text-slate-600">Enter to send · Shift+Enter for newline{(skills ?? []).length > 0 ? " · / for skills" : ""}</p>
           </div>
         </div>
       </div>

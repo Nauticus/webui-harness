@@ -19,6 +19,7 @@ import {
 } from './compaction';
 import { detectModels, groupModels } from './providers';
 import { isReasoningEffort, type ReasoningEffort } from './reasoning';
+import { listSkills, expandSkillInvocation } from './skills';
 import { DEFAULT_WORKSPACE } from './tools';
 
 const PORT = Number(process.env.PORT ?? 3001);
@@ -339,6 +340,13 @@ app.get('/api/dirs', async (req, reply) => {
   }
 });
 
+app.get('/api/skills', async (req, reply) => {
+  const { projectId } = req.query as { projectId?: string };
+  // Skills are global + per-project; with a project, include its own dir too.
+  const workspace = projectId ? db.getProject(projectId)?.cwd || DEFAULT_WORKSPACE : DEFAULT_WORKSPACE;
+  reply.send({ skills: listSkills(workspace) });
+});
+
 app.get('/api/sessions/:id', async (req, reply) => {
   const { id } = req.params as { id: string };
   const session = db.getSession(id);
@@ -365,7 +373,8 @@ app.get('/api/sessions/:id', async (req, reply) => {
       context = contextUsage(
         toLlmMessages(messages),
         project.cwd || DEFAULT_WORKSPACE,
-        providerModels.find((m) => m.id === model)?.contextWindow
+        providerModels.find((m) => m.id === model)?.contextWindow,
+        listSkills(project.cwd || DEFAULT_WORKSPACE)
       );
     }
   }
@@ -421,6 +430,26 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   if (!project) return reply.code(404).send({ error: 'project not found' });
   const workspace = project.cwd || DEFAULT_WORKSPACE;
 
+  // Skills visible to this workspace (global + project), used for the
+  // system prompt, the sandbox read-roots, and /skill:name invocations.
+  const skills = listSkills(workspace);
+  const content = body.content.trim();
+  // Explicit invocation (/skill:name [task]): reject unknown skills up front
+  // so the client gets a plain error; the raw text expands to instructions
+  // below once the history row is read back.
+  const invocation = expandSkillInvocation(content, skills);
+  if (invocation.kind === 'not-found') {
+    const available = skills.map((s) => s.name).join(', ');
+    return reply.code(400).send({
+      error: `unknown skill "${invocation.name}"${available ? ` — available: ${available}` : ' (no skills installed)'}`,
+    });
+  }
+  // A skill invocation titles the session by its task, not the command line.
+  const titleSource =
+    invocation.kind === 'expanded' && invocation.skill && invocation.skill.name
+      ? content.replace(/^\/skill:[a-z0-9-]+[ \t]*/, '').slice(0, 48)
+      : content.slice(0, 48);
+
   const providers = db.listProviders();
   const provider =
     (project.provider_id ? providers.find((p) => p.id === project.provider_id) : undefined) ??
@@ -442,7 +471,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
 
   await history.appendRecord(id, session.project_id, { role: 'user', content: body.content.trim() });
   if (session.title === 'New session') {
-    db.setSessionTitle(id, body.content.trim().slice(0, 48));
+    db.setSessionTitle(id, titleSource);
   }
 
   // Take over the raw response for SSE (Fastify's reply.send would buffer it).
@@ -468,6 +497,17 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   try {
     const historyRows = await history.readHistory(id, session.project_id);
     let messages = toLlmMessages(historyRows);
+    // Materialize an explicit /skill:name invocation: history keeps the
+    // compact command text (nice on reload); the model gets instructions.
+    if (invocation.kind === 'expanded') {
+      for (let i = messages.length - 1; i >= 0; i--) {
+        const m = messages[i]!;
+        if (m.role === 'user') {
+          m.content = invocation.text;
+          break;
+        }
+      }
+    }
     // Pre-turn compaction: the context may have grown past the threshold in
     // an earlier turn. Non-fatal — on failure the full context is sent.
     if (estimateTokens(messages) > compactionThreshold(contextWindow)) {
@@ -515,7 +555,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
         });
       }
     }
-    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow, reasoningEffort: session.reasoning_effort, signal: stop.signal })) {
+    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow, reasoningEffort: session.reasoning_effort, skills, signal: stop.signal })) {
       send(ev);
       switch (ev.type) {
         case 'message.complete':

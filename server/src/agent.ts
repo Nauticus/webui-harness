@@ -4,6 +4,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import { TOOLS, runTool } from './tools';
 import { providerClient, type ProviderCreds } from './providers';
 import { effortExtraParams } from './reasoning';
+import { type Skill } from './skills';
 import {
   compactionThreshold,
   compactMessages,
@@ -73,8 +74,20 @@ export type AgentEvent =
  */
 const LOOP_GUARD = 200;
 
-const SYSTEM_PROMPT = (workspace: string) =>
-  `You are a local AI agent. Your working directory is ${workspace}. You can run shell commands and read/write files inside it (and its subdirectories) — that is the only place you may write. To modify an existing file use edit_file (targeted replacement) rather than rewriting the whole file with write_file; write_file is for new files. Use tools to actually do the work; never claim to have done something you did not. Be concise in your final answer.`;
+const SYSTEM_PROMPT = (workspace: string, skills: Skill[] = []) => {
+  const base =
+    `You are a local AI agent. Your working directory is ${workspace}. You can run shell commands and read/write files inside it (and its subdirectories) — that is the only place you may write. To modify an existing file use edit_file (targeted replacement) rather than rewriting the whole file with write_file; write_file is for new files. Use tools to actually do the work; never claim to have done something you did not. Be concise in your final answer.`;
+  const usable = skills.filter((s) => !s.disableModelInvocation);
+  if (usable.length === 0) return base;
+  const list = usable
+    .map((s) => `- ${s.name}: ${s.description} — instructions at ${s.filePath}`)
+    .join('\n');
+  return (
+    base +
+    `\n\nAvailable skills (specialized workflows for particular kinds of work). When the task matches one, first read its instructions with read_file, then follow them; bundled files are relative to the skill directory:
+${list}`
+  );
+};
 
 /** Extract displayable text from OpenRouter-style reasoning_details entries. */
 function reasoningDetailsText(details: unknown): string {
@@ -96,10 +109,11 @@ export const DEFAULT_MODEL = () => process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
 export function contextUsage(
   messages: CompactableMessage[],
   workspace: string,
-  contextWindow?: number
+  contextWindow?: number,
+  skills: Skill[] = []
 ): { tokens: number; window: number; threshold: number } {
   const conversation: CompactableMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT(workspace) },
+    { role: 'system', content: SYSTEM_PROMPT(workspace, skills) },
     ...messages,
   ];
   return {
@@ -125,9 +139,12 @@ export async function* runAgentTurn(opts: {
   /** How hard the model should reason ('' = provider default). */
   reasoningEffort?: string;
   signal?: AbortSignal;
+  /** Skills visible to this workspace (advertised in the system prompt,
+   *  readable from the sandbox). */
+  skills?: Skill[];
 }): AsyncGenerator<AgentEvent> {
   const conversation: CompactableMessage[] = [
-    { role: 'system', content: SYSTEM_PROMPT(opts.workspace) },
+    { role: 'system', content: SYSTEM_PROMPT(opts.workspace, opts.skills ?? []) },
     ...opts.messages,
   ];
   const model = opts.model?.trim() || DEFAULT_MODEL();
@@ -363,7 +380,13 @@ export async function* runAgentTurn(opts: {
           args = { _invalid_json: call.function.arguments };
         }
         yield { type: 'tool.start', id: call.id, name: call.function.name, args };
-        const result = await runTool(call.function.name, args, opts.workspace, opts.signal);
+        const result = await runTool(
+          call.function.name,
+          args,
+          opts.workspace,
+          opts.signal,
+          (opts.skills ?? []).map((s) => s.dir)
+        );
         yield {
           type: 'tool.result',
           id: call.id,

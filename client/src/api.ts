@@ -78,6 +78,16 @@ export interface ContextUsage {
   threshold: number;
 }
 
+/** Agent Skill (agentskills.io spec): a directory with SKILL.md. */
+export interface Skill {
+  name: string;
+  description: string;
+  dir: string;
+  filePath: string;
+  source: 'global' | 'project';
+  disableModelInvocation: boolean;
+}
+
 export interface ServerEvent {
   type: string;
   [key: string]: unknown;
@@ -165,6 +175,10 @@ export const api = {
       body: JSON.stringify({ reasoningEffort }),
     }).then((r) => json<Session>(r)),
   deleteSession: (id: string) => fetch(`/api/sessions/${id}`, { method: 'DELETE' }).then((r) => json<void>(r)),
+  listSkills: (projectId?: string) =>
+    fetch(`/api/skills${projectId ? `?projectId=${encodeURIComponent(projectId)}` : ''}`).then((r) =>
+      json<{ skills: Skill[] }>(r)
+    ),
   getSession: (id: string) =>
     fetch(`/api/sessions/${id}`).then((r) =>
       json<{ session: Session; context: ContextUsage | null; messages: MessageRow[] }>(r)

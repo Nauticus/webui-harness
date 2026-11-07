@@ -8,3 +8,4 @@ data/
 
 # pi agent local state
 .pi/
+.playwright-cli/
