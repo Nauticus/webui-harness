@@ -3,6 +3,7 @@ import { APIUserAbortError } from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
 import { TOOLS, runTool } from './tools';
 import { providerClient, type ProviderCreds } from './providers';
+import { effortExtraParams } from './reasoning';
 import {
   compactionThreshold,
   compactMessages,
@@ -95,6 +96,8 @@ export async function* runAgentTurn(opts: {
   provider: ProviderCreds;
   /** The model's context window in tokens (provider config); unknown -> env/default. */
   contextWindow?: number;
+  /** How hard the model should reason ('' = provider default). */
+  reasoningEffort?: string;
   signal?: AbortSignal;
 }): AsyncGenerator<AgentEvent> {
   const conversation: CompactableMessage[] = [
@@ -105,6 +108,13 @@ export async function* runAgentTurn(opts: {
   const client = providerClient(opts.provider);
   const window = opts.contextWindow ?? DEFAULT_CONTEXT_WINDOW;
   const threshold = compactionThreshold(opts.contextWindow);
+  // Provider-specific body params for the session's reasoning effort
+  // ({} when auto or when the provider/model doesn't accept them).
+  const effortParams = effortExtraParams(
+    opts.provider.baseUrl,
+    model,
+    opts.reasoningEffort ?? ''
+  );
 
   /** True when the user requested a stop (the signal fired, or the SDK
    *  surfaced the abort as its APIUserAbortError). */
@@ -196,6 +206,7 @@ export async function* runAgentTurn(opts: {
           messages: conversation as unknown as ChatCompletionMessageParam[],
           ...(atGuard ? {} : { tools: TOOLS }),
           stream: true,
+          ...effortParams,
         },
         { signal: opts.signal }
       );

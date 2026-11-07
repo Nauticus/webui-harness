@@ -23,9 +23,12 @@ export default function App() {
     activeProjectId: projects.activeProjectId,
     activeSessionId: sessions.activeSessionId,
     activeSessionModel: sessions.activeSession?.model ?? '',
+    activeSessionEffort: sessions.activeSession?.reasoning_effort ?? '',
     refreshSessions: sessions.refreshSessions,
     onSessionCreated: (id) => sessions.setActiveSessionId(id),
-    onSessionModelUpdated: (id, model) => sessions.updateSessionLocal(id, model),
+    onSessionModelUpdated: (id, model) => sessions.updateSessionLocal(id, { model }),
+    onSessionEffortUpdated: (id, reasoningEffort) =>
+      sessions.updateSessionLocal(id, { reasoningEffort }),
   });
 
   // On first load: fetch projects, activate the first one (or open the dialog).
@@ -202,6 +205,8 @@ export default function App() {
           disabled={!projects.activeProject}
           placeholder={projects.activeProject ? 'Ask the agent to do something…' : 'Create a project first…'}
           onModelChange={(v) => void chat.setModel(v)}
+          onEffortChange={(v) => void chat.setEffort(v)}
+          effort={chat.effortValue}
           onInput={chat.setInput}
           onKeyDown={chat.onKeyDown}
           onSend={() => void chat.send()}

@@ -2,6 +2,7 @@ import type { ChatCompletionMessageParam } from 'openai/resources/chat/completio
 import type { LlmMessage, StoredToolCall } from './agent';
 import type { HistoryRecord } from './history';
 import { providerClient, type ProviderCreds } from './providers';
+import { effortExtraParams } from './reasoning';
 
 /**
  * Context compaction, modeled on the pi coding agent's approach:
@@ -254,9 +255,12 @@ export async function compactMessages(opts: {
   messages: CompactableMessage[];
   provider: ProviderCreds;
   model: string;
+  /** Same reasoning effort the session uses ('' = provider default). */
+  reasoningEffort?: string;
   signal?: AbortSignal;
 }): Promise<CompactResult> {
-  const { messages, provider, model, signal } = opts;
+  const { messages, provider, model, reasoningEffort, signal } = opts;
+  const effortParams = effortExtraParams(provider.baseUrl, model, reasoningEffort ?? '');
   const tokensBefore = estimateTokens(messages);
   const cut = findCutPoint(messages);
   if (cut <= 0) throw new Error('compaction: nothing to summarize');
@@ -288,6 +292,7 @@ export async function compactMessages(opts: {
         { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
         { role: 'user', content: buildSummaryPrompt(previousSummary, serialized) },
       ] as ChatCompletionMessageParam[],
+      ...effortParams,
     },
     { signal }
   );

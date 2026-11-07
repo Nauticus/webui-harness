@@ -18,17 +18,20 @@ export function useChatTurn(opts: {
   activeProjectId: string | null;
   activeSessionId: string | null;
   activeSessionModel: string; // '' = auto
+  activeSessionEffort: string; // '' = auto
   refreshSessions: (projectId: string) => Promise<void>;
   /** called with the new session id when the first message creates one */
   onSessionCreated: (id: string) => void;
-  /** update the local session row after a model patch */
+  /** update the local session row after a model/effort patch */
   onSessionModelUpdated: (sessionId: string, model: string) => void;
+  onSessionEffortUpdated: (sessionId: string, effort: string) => void;
 }) {
   const [items, setItems] = useState<Item[]>([]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
   const [context, setContext] = useState<ContextUsage | null>(null);
   const [pendingModels, setPendingModels] = useState<Record<string, string>>({});
+  const [pendingEfforts, setPendingEfforts] = useState<Record<string, string>>({});
   const streamedRef = useRef(false);
   const controllerRef = useRef<AbortController | null>(null);
 
@@ -70,14 +73,41 @@ export function useChatTurn(opts: {
     [opts]
   );
 
+  /** The composer's effort value: the session's pick, else the pending one. */
+  const effortValue =
+    opts.activeSessionId !== null
+      ? opts.activeSessionEffort
+      : pendingEfforts[opts.activeProjectId ?? ''] ?? '';
+
+  const setEffort = useCallback(
+    async (v: string) => {
+      if (opts.activeSessionId) {
+        await api.updateSessionReasoningEffort(opts.activeSessionId, v);
+        opts.onSessionEffortUpdated(opts.activeSessionId, v);
+      } else if (opts.activeProjectId) {
+        setPendingEfforts((prev) => ({ ...prev, [opts.activeProjectId!]: v }));
+      }
+    },
+    [opts]
+  );
+
   const send = useCallback(async () => {
     const content = input.trim();
     if (!content || busy || !opts.activeProjectId) return;
 
     let sessionId = opts.activeSessionId;
     if (!sessionId) {
-      const s = await api.createSession(opts.activeProjectId, pendingModels[opts.activeProjectId]);
+      const s = await api.createSession(
+        opts.activeProjectId,
+        pendingModels[opts.activeProjectId],
+        pendingEfforts[opts.activeProjectId]
+      );
       setPendingModels((prev) => {
+        const next = { ...prev };
+        delete next[opts.activeProjectId!];
+        return next;
+      });
+      setPendingEfforts((prev) => {
         const next = { ...prev };
         delete next[opts.activeProjectId!];
         return next;
@@ -236,6 +266,8 @@ export function useChatTurn(opts: {
     context,
     modelValue,
     setModel,
+    effortValue,
+    setEffort,
     loadHistory,
     clear,
     pendingModelFor,

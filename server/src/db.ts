@@ -64,6 +64,7 @@ export interface SessionRow {
   project_id: string;
   title: string;
   model: string; // '' = resolve from project / provider
+  reasoning_effort: string; // '' = auto (provider's default)
   created_at: string;
 }
 
@@ -96,11 +97,21 @@ db.exec(`
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title      TEXT NOT NULL DEFAULT 'New session',
     model      TEXT NOT NULL DEFAULT '',
+    reasoning_effort TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   -- Note: message history no longer lives in SQLite; it is stored as encrypted
   -- per-session JSONL files under <dataDir>/history (see src/history.ts).
 `);
+
+// Migration for pre-existing databases: add columns introduced after the
+// initial schema (guarded so fresh DBs are untouched).
+const sessionCols = (db.prepare('PRAGMA table_info(sessions)').all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!sessionCols.includes('reasoning_effort')) {
+  db.exec("ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''");
+}
 
 /* ---------- projects ---------- */
 
@@ -281,20 +292,21 @@ export function setModelContextWindows(
 /* ---------- sessions ---------- */
 
 const selectSession = db.prepare(
-  'SELECT id, project_id, title, model, created_at FROM sessions WHERE id = ?'
+  'SELECT id, project_id, title, model, reasoning_effort, created_at FROM sessions WHERE id = ?'
 );
 
 export function createSession(
   projectId: string,
-  input: { title?: string; model?: string } = {}
+  input: { title?: string; model?: string; reasoningEffort?: string } = {}
 ): SessionRow {
   if (!getProject(projectId)) throw new Error('project not found');
   const id = randomUUID();
-  db.prepare('INSERT INTO sessions (id, project_id, title, model) VALUES (?, ?, ?, ?)').run(
+  db.prepare('INSERT INTO sessions (id, project_id, title, model, reasoning_effort) VALUES (?, ?, ?, ?, ?)').run(
     id,
     projectId,
     input.title?.trim() || 'New session',
-    input.model ?? ''
+    input.model ?? '',
+    input.reasoningEffort ?? ''
   );
   return selectSession.get(id) as SessionRow;
 }
@@ -302,7 +314,7 @@ export function createSession(
 export function listSessions(projectId: string): SessionRow[] {
   return db
     .prepare(
-      'SELECT id, project_id, title, model, created_at FROM sessions WHERE project_id = ? ORDER BY created_at DESC, id DESC'
+      'SELECT id, project_id, title, model, reasoning_effort, created_at FROM sessions WHERE project_id = ? ORDER BY created_at DESC, id DESC'
     )
     .all(projectId) as SessionRow[];
 }
@@ -317,6 +329,10 @@ export function setSessionTitle(id: string, title: string): void {
 
 export function setSessionModel(id: string, model: string): void {
   db.prepare('UPDATE sessions SET model = ? WHERE id = ?').run(model, id);
+}
+
+export function setSessionReasoningEffort(id: string, reasoningEffort: string): void {
+  db.prepare('UPDATE sessions SET reasoning_effort = ? WHERE id = ?').run(reasoningEffort, id);
 }
 
 export function deleteSession(id: string): void {

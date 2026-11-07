@@ -52,6 +52,7 @@ export interface Session {
   project_id: string;
   title: string;
   model: string; // '' = resolve from project / provider
+  reasoning_effort: string; // '' = auto (provider's default)
   created_at: string;
 }
 
@@ -134,17 +135,27 @@ export const api = {
 
   listSessions: (projectId: string) =>
     fetch(`/api/sessions?projectId=${encodeURIComponent(projectId)}`).then((r) => json<Session[]>(r)),
-  createSession: (projectId: string, model?: string) =>
+  createSession: (projectId: string, model?: string, reasoningEffort?: string) =>
     fetch('/api/sessions', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ projectId, ...(model ? { model } : {}) }),
+      body: JSON.stringify({
+        projectId,
+        ...(model ? { model } : {}),
+        ...(reasoningEffort ? { reasoningEffort } : {}),
+      }),
     }).then((r) => json<Session>(r)),
   updateSessionModel: (id: string, model: string) =>
     fetch(`/api/sessions/${id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ model }),
+    }).then((r) => json<Session>(r)),
+  updateSessionReasoningEffort: (id: string, reasoningEffort: string) =>
+    fetch(`/api/sessions/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reasoningEffort }),
     }).then((r) => json<Session>(r)),
   deleteSession: (id: string) => fetch(`/api/sessions/${id}`, { method: 'DELETE' }).then((r) => json<void>(r)),
   getSession: (id: string) =>

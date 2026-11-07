@@ -17,6 +17,7 @@ import {
   type CompactableMessage,
 } from './compaction';
 import { detectModels, groupModels } from './providers';
+import { isReasoningEffort, type ReasoningEffort } from './reasoning';
 import { DEFAULT_WORKSPACE } from './tools';
 
 const PORT = Number(process.env.PORT ?? 3001);
@@ -64,6 +65,18 @@ function validateModel(model: unknown): string | undefined {
     throw Object.assign(new Error('model must be at most 120 chars'), { statusCode: 400 });
   }
   return trimmed;
+}
+
+/** Accepts a reasoning effort body field; undefined = not sent, bad value -> 400. */
+function validateEffort(effort: unknown): ReasoningEffort | undefined {
+  if (effort === undefined) return undefined;
+  if (!isReasoningEffort(effort)) {
+    throw Object.assign(
+      new Error(`reasoningEffort must be one of: auto (''), low, medium, high`),
+      { statusCode: 400 }
+    );
+  }
+  return effort;
 }
 
 function validateProviderId(providerId: unknown): string | undefined {
@@ -269,10 +282,14 @@ app.get('/api/sessions', async (req, reply) => {
 });
 
 app.post('/api/sessions', async (req, reply) => {
-  const body = (req.body ?? {}) as { projectId?: string; title?: string; model?: string };
+  const body = (req.body ?? {}) as { projectId?: string; title?: string; model?: string; reasoningEffort?: string };
   if (!body.projectId) return reply.code(400).send({ error: 'projectId is required' });
   try {
-    const session = db.createSession(body.projectId, { title: body.title, model: validateModel(body.model) });
+    const session = db.createSession(body.projectId, {
+      title: body.title,
+      model: validateModel(body.model),
+      reasoningEffort: validateEffort(body.reasoningEffort) ?? '',
+    });
     reply.code(201).send(session);
   } catch (err) {
     reply.code((err as { statusCode?: number }).statusCode ?? 404).send({
@@ -284,9 +301,11 @@ app.post('/api/sessions', async (req, reply) => {
 app.patch('/api/sessions/:id', async (req, reply) => {
   const { id } = req.params as { id: string };
   if (!db.getSession(id)) return reply.code(404).send({ error: 'session not found' });
-  const body = (req.body ?? {}) as { model?: string };
+  const body = (req.body ?? {}) as { model?: string; reasoningEffort?: string };
   const model = validateModel(body.model);
   if (model !== undefined) db.setSessionModel(id, model);
+  const effort = validateEffort(body.reasoningEffort);
+  if (effort !== undefined) db.setSessionReasoningEffort(id, effort);
   reply.send(db.getSession(id));
 });
 
@@ -408,7 +427,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
     // Pre-turn compaction: the context may have grown past the threshold in
     // an earlier turn. Non-fatal — on failure the full context is sent.
     if (estimateTokens(messages) > compactionThreshold(contextWindow)) {
-      const c = await compactMessages({ messages, provider: providerCreds, model: model || DEFAULT_MODEL(), signal: stop.signal }).catch((err) => {
+      const c = await compactMessages({ messages, provider: providerCreds, model: model || DEFAULT_MODEL(), reasoningEffort: session.reasoning_effort, signal: stop.signal }).catch((err) => {
         app.log.warn(`pre-turn compaction failed: ${String(err)}`);
         return undefined;
       });
@@ -428,7 +447,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
         });
       }
     }
-    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow, signal: stop.signal })) {
+    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow, reasoningEffort: session.reasoning_effort, signal: stop.signal })) {
       send(ev);
       switch (ev.type) {
         case 'message.complete':

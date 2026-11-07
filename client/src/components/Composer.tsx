@@ -34,22 +34,33 @@ function ContextBadge({ context, busy }: { context: ContextUsage; busy: boolean 
 }
 
 /**
- * Composer: full-width prompt input with a compact model-picker chip.
- * Clicking the chip opens a popover listing "auto" (provider's default)
- * followed by the provider's base models (aliases/snapshots collapsed,
- * with their context window when known); the current pick gets a checkmark.
- * The chip itself shows the selected model's context window as a suffix
- * (e.g. "gpt-4o · 128k").
+ * Composer: full-width prompt input with a compact model-picker chip and a
+ * reasoning-effort chip. Clicking the model chip opens a popover listing
+ * "auto" (provider's default) followed by the provider's base models
+ * (aliases/snapshots collapsed, with their context window when known);
+ * the current pick gets a checkmark. The chip itself shows the selected
+ * model's context window as a suffix (e.g. "gpt-4o · 128k"). The effort
+ * chip offers how hard thinking-capable models should reason (auto =
+ * the provider's default).
  */
+const EFFORT_OPTIONS: { value: string; label: string; hint: string }[] = [
+  { value: '', label: 'auto', hint: "provider's default" },
+  { value: 'low', label: 'low', hint: 'quick, cheap' },
+  { value: 'medium', label: 'medium', hint: 'balanced' },
+  { value: 'high', label: 'high', hint: 'deep reasoning' },
+];
+
 export function Composer({
   model,
   modelGroups,
+  effort,
   context,
   input,
   busy,
   disabled,
   placeholder,
   onModelChange,
+  onEffortChange,
   onInput,
   onKeyDown,
   onSend,
@@ -57,12 +68,14 @@ export function Composer({
 }: {
   model: string; // '' = auto (provider's default model)
   modelGroups: ModelGroup[];
+  effort: string; // '' = auto (provider's default reasoning effort)
   context: ContextUsage | null; // current context size vs window/threshold
   input: string;
   busy: boolean;
   disabled: boolean;
   placeholder: string;
   onModelChange: (v: string) => void;
+  onEffortChange: (v: string) => void;
   onInput: (v: string) => void;
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => void;
@@ -70,15 +83,22 @@ export function Composer({
 }) {
   const [open, setOpen] = useState(false);
   const pickerRef = useRef<HTMLDivElement>(null);
+  const [effortOpen, setEffortOpen] = useState(false);
+  const effortRef = useRef<HTMLDivElement>(null);
 
-  // Close the popover on outside click or Escape.
+  // Close the popovers on outside click or Escape.
   useEffect(() => {
-    if (!open) return;
+    if (!open && !effortOpen) return;
     const onPointerDown = (e: globalThis.PointerEvent) => {
-      if (pickerRef.current && !pickerRef.current.contains(e.target as Node)) setOpen(false);
+      if (open && pickerRef.current && !pickerRef.current.contains(e.target as Node)) setOpen(false);
+      if (effortOpen && effortRef.current && !effortRef.current.contains(e.target as Node))
+        setEffortOpen(false);
     };
     const onKeyDownDoc = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') setOpen(false);
+      if (e.key === 'Escape') {
+        setOpen(false);
+        setEffortOpen(false);
+      }
     };
     document.addEventListener('pointerdown', onPointerDown);
     document.addEventListener('keydown', onKeyDownDoc);
@@ -86,7 +106,7 @@ export function Composer({
       document.removeEventListener('pointerdown', onPointerDown);
       document.removeEventListener('keydown', onKeyDownDoc);
     };
-  }, [open]);
+  }, [open, effortOpen]);
 
   const pickerDisabled = busy || disabled;
   // The group the current model belongs to (canonical id or one of its aliases).
@@ -130,6 +150,7 @@ export function Composer({
         </div>
 
         <div className="mt-1.5 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-1.5">
           <div ref={pickerRef} className="relative">
             <button
               onClick={() => setOpen((v) => !v)}
@@ -207,6 +228,49 @@ export function Composer({
                 })}
               </div>
             )}
+          </div>
+            <div ref={effortRef} className="relative">
+              <button
+                onClick={() => setEffortOpen((v) => !v)}
+                disabled={pickerDisabled}
+                title="Reasoning effort for this chat (thinking-capable models)"
+                className="flex items-center gap-1 rounded-full border border-slate-700/80 bg-slate-900 px-2.5 py-1 text-[11px] text-slate-400 transition-colors hover:border-violet-500/50 hover:text-slate-200 disabled:opacity-50"
+              >
+                <span className="text-violet-400/80">✦</span>
+                {effort || 'auto'}
+                <svg
+                  viewBox="0 0 12 12"
+                  className={`h-3 w-3 transition-transform ${effortOpen ? 'rotate-180' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="1.5"
+                >
+                  <path d="M2.5 4.5 6 8l3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
+                </svg>
+              </button>
+              {effortOpen && (
+                <div className="absolute bottom-full left-0 z-10 mb-1.5 w-52 rounded-xl border border-slate-700 bg-slate-900 py-1 shadow-xl">
+                  {EFFORT_OPTIONS.map((o) => {
+                    const selected = (effort || '') === o.value;
+                    return (
+                      <button
+                        key={o.value || 'auto'}
+                        onClick={() => {
+                          onEffortChange(o.value);
+                          setEffortOpen(false);
+                        }}
+                        className={`flex w-full items-baseline justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-slate-800 ${
+                          selected ? 'text-violet-300' : 'text-slate-300'
+                        }`}
+                      >
+                        <span>{o.label}</span>
+                        <span className="text-[10px] text-slate-600">{o.hint}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
           <div className="flex items-center gap-3">
             {context && <ContextBadge context={context} busy={busy} />}

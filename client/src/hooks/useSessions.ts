@@ -23,8 +23,20 @@ export function useSessions() {
     []
   );
 
-  const updateSessionLocal = useCallback((id: string, model: string) => {
-    setSessions((prev) => prev.map((s) => (s.id === id ? { ...s, model } : s)));
+  const updateSessionLocal = useCallback((id: string, patch: { model?: string; reasoningEffort?: string }) => {
+    setSessions((prev) =>
+      prev.map((s) =>
+        s.id === id
+          ? {
+              ...s,
+              ...(patch.model !== undefined ? { model: patch.model } : {}),
+              ...(patch.reasoningEffort !== undefined
+                ? { reasoning_effort: patch.reasoningEffort }
+                : {}),
+            }
+          : s
+      )
+    );
   }, []);
 
   const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
