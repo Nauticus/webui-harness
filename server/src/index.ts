@@ -368,6 +368,22 @@ app.get('/api/sessions/:id', async (req, reply) => {
  *   message.complete / error -> terminal events (complete carries reasoning)
  *   done           -> final event, stream closes
  */
+
+/**
+ * Active turns by session id. Stop has two paths: closing the stream
+ * (works with a direct connection) and this explicit map (works when a
+ * dev proxy between client and server swallows the client disconnect).
+ */
+const activeTurns = new Map<string, AbortController>();
+
+/** Explicit stop for the session's active turn (independent of connection state). */
+app.post('/api/sessions/:id/stop', async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const stop = activeTurns.get(id);
+  if (!stop) return reply.send({ stopped: false });
+  stop.abort();
+  return reply.send({ stopped: true });
+});
 app.post('/api/sessions/:id/messages', async (req, reply) => {
   const { id } = req.params as { id: string };
   const body = (req.body ?? {}) as { content?: string };
@@ -414,6 +430,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   // button / navigating away): that aborts the agent loop server-side too.
   const stop = new AbortController();
   reply.raw.on('close', () => stop.abort());
+  activeTurns.set(id, stop);
   const send = (data: unknown) => {
     if (reply.raw.destroyed) return; // client already gone (stopped)
     reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
@@ -537,6 +554,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
     app.log.error(err);
     send({ type: 'error', message: String(err instanceof Error ? err.message : err) });
   } finally {
+    activeTurns.delete(id);
     reply.raw.end();
   }
 });

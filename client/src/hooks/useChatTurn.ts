@@ -33,11 +33,13 @@ export function useChatTurn(opts: {
   const [pendingModels, setPendingModels] = useState<Record<string, string>>({});
   const [pendingEfforts, setPendingEfforts] = useState<Record<string, string>>({});
   const streamedRef = useRef(false);
+  const streamedSessionId = useRef<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
 
   const clear = useCallback(() => {
     setItems([]);
     setContext(null);
+    streamedSessionId.current = null;
   }, []);
 
   const pendingModelFor = useCallback(
@@ -123,6 +125,7 @@ export function useChatTurn(opts: {
     streamedRef.current = false;
     const controller = new AbortController();
     controllerRef.current = controller;
+    streamedSessionId.current = sessionId;
     // Only the user item is pre-created; thinking/assistant/tool blocks are
     // appended as they arrive so the UI matches the server's stream order.
     setItems((prev) => [...prev, { kind: 'user', content }]);
@@ -280,15 +283,21 @@ export function useChatTurn(opts: {
         prev.map((it) => (it.kind === 'compaction' && it.status === 'running' ? { ...it, status: 'done' as const } : it))
       );
       controllerRef.current = null;
+      streamedSessionId.current = null;
       setBusy(false);
     }
   }, [input, busy, opts]);
 
-  /** Stop the running turn: aborts the stream (the server detects the closed
-   *  connection and stops the agent loop, killing any running command). */
+  /** Stop the running turn: aborts the local stream AND explicitly stops the
+   *  server-side agent (the explicit call is what works when a dev proxy
+   *  swallows the client disconnect). */
   const abort = useCallback(() => {
     if (!controllerRef.current) return;
+    const sessionId = streamedSessionId.current;
     controllerRef.current.abort();
+    if (sessionId) {
+      fetch(`/api/sessions/${sessionId}/stop`, { method: 'POST' }).catch(() => {});
+    }
     setItems((prev) => [...prev, { kind: 'stopped' }]);
     setBusy(false);
   }, []);
