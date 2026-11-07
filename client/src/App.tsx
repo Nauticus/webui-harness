@@ -57,11 +57,18 @@ export default function App() {
   const [dialog, setDialog] = useState<ProjectDialog>(null);
   const [providers, setProviders] = useState<Provider[]>([]);
   const [providersOpen, setProvidersOpen] = useState(false);
+  const [pendingModels, setPendingModels] = useState<Record<string, string>>({}); // per-project, until a session exists
 
   const bottomRef = useRef<HTMLDivElement>(null);
   const streamedRef = useRef(false);
 
   const activeProject = projects.find((p) => p.id === activeProjectId) ?? null;
+  const activeSession = sessions.find((s) => s.id === activeSessionId) ?? null;
+
+  // Provider whose models fill the composer's model select.
+  const composerProvider =
+    providers.find((p) => p.id === (activeProject?.provider_id ?? '')) ??
+    providers.find((p) => p.is_default);
 
   const refreshProjects = useCallback(async () => {
     setProjects(await api.listProjects());
@@ -128,12 +135,17 @@ export default function App() {
 
   const newSession = useCallback(async () => {
     if (!activeProjectId) return;
-    const s = await api.createSession(activeProjectId);
+    const s = await api.createSession(activeProjectId, pendingModels[activeProjectId]);
+    setPendingModels((prev) => {
+      const next = { ...prev };
+      delete next[activeProjectId];
+      return next;
+    });
     await refreshSessions(activeProjectId);
     setActiveSessionId(s.id);
     setItems([]);
     setLoadError(null);
-  }, [activeProjectId, refreshSessions]);
+  }, [activeProjectId, pendingModels, refreshSessions]);
 
   const removeSession = useCallback(
     async (id: string) => {
@@ -155,7 +167,12 @@ export default function App() {
 
     let sessionId = activeSessionId;
     if (!sessionId) {
-      const s = await api.createSession(activeProjectId);
+      const s = await api.createSession(activeProjectId, pendingModels[activeProjectId]);
+      setPendingModels((prev) => {
+        const next = { ...prev };
+        delete next[activeProjectId];
+        return next;
+      });
       await refreshSessions(activeProjectId);
       sessionId = s.id;
       setActiveSessionId(s.id);
@@ -219,7 +236,23 @@ export default function App() {
     } finally {
       setBusy(false);
     }
-  }, [input, busy, activeProjectId, activeSessionId, refreshSessions]);
+  }, [input, busy, activeProjectId, activeSessionId, pendingModels, refreshSessions]);
+
+  const onModelChange = useCallback(
+    async (v: string) => {
+      if (activeSessionId) {
+        try {
+          const s = await api.updateSessionModel(activeSessionId, v);
+          setSessions((prev) => prev.map((x) => (x.id === s.id ? s : x)));
+        } catch (err) {
+          setLoadError(String(err instanceof Error ? err.message : err));
+        }
+      } else if (activeProjectId) {
+        setPendingModels((prev) => ({ ...prev, [activeProjectId]: v }));
+      }
+    },
+    [activeSessionId, activeProjectId]
+  );
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
     if (e.key === 'Enter' && !e.shiftKey) {
@@ -314,7 +347,7 @@ export default function App() {
               <button
                 key={p.id}
                 onClick={() => void selectProject(p.id)}
-                title={`${p.model || 'auto model'} · ${p.cwd || 'default dir'}`}
+                title={`${p.cwd || 'default dir'}`}
                 className={`flex shrink-0 items-center gap-2 rounded-lg px-3 py-1.5 text-sm transition-colors ${
                   p.id === activeProjectId
                     ? 'bg-slate-800 font-medium text-slate-100'
@@ -322,11 +355,6 @@ export default function App() {
                 }`}
               >
                 <span className="max-w-40 truncate">{p.name}</span>
-                {p.model && (
-                  <span className="hidden truncate rounded-full border border-slate-700 px-1.5 font-mono text-[9px] text-slate-500 lg:inline">
-                    {p.model}
-                  </span>
-                )}
               </button>
             ))}
             <button
@@ -408,8 +436,8 @@ export default function App() {
                 </div>
                 <h2 className="text-base font-semibold text-slate-200">Create a project to get started</h2>
                 <p className="mt-2 text-sm leading-relaxed text-slate-500">
-                  A project defines the working directory and preferred model for its agent
-                  sessions. Leave either blank to use the provider's defaults.
+                  A project defines the working directory and provider for its agent
+                  sessions. Leave the working dir blank to use the server default.
                 </p>
                 <button
                   onClick={() => setDialog({ mode: 'create' })}
@@ -448,6 +476,20 @@ export default function App() {
         <footer className="border-t border-slate-800 px-5 py-4">
           <div className="mx-auto w-full max-w-3xl">
             <div className="flex items-end gap-2 rounded-2xl border border-slate-700 bg-slate-900 p-2 transition-colors focus-within:border-sky-500/60">
+              <select
+                value={activeSession ? activeSession.model : (pendingModels[activeProjectId ?? ''] ?? '')}
+                onChange={(e) => void onModelChange(e.target.value)}
+                disabled={busy || !activeProject}
+                title="Model for this chat"
+                className="h-9 w-44 max-w-[40%] shrink-0 cursor-pointer truncate rounded-xl border border-slate-700 bg-slate-950 px-2 text-xs text-slate-300 outline-none disabled:opacity-50"
+              >
+                <option value="">auto</option>
+                {(composerProvider?.models ?? []).map((m) => (
+                  <option key={m} value={m}>
+                    {m}
+                  </option>
+                ))}
+              </select>
               <textarea
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
@@ -470,7 +512,7 @@ export default function App() {
               </button>
             </div>
             <p className="mt-1.5 text-center text-[11px] text-slate-600">
-              Enter to send · Shift+Enter for newline
+              Enter to send · Shift+Enter for newline · model: auto = provider's first model
             </p>
           </div>
         </footer>
@@ -500,16 +542,12 @@ function ProjectDialog({
   const [name, setName] = useState(editing?.name ?? '');
   const [cwd, setCwd] = useState(editing?.cwd ?? '');
   const [providerId, setProviderId] = useState(editing?.provider_id ?? '');
-  const [model, setModel] = useState(editing?.model ?? '');
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
   const [browsing, setBrowsing] = useState(false);
   const [dirs, setDirs] = useState<DirsResponse | null>(null);
 
-  // Models for the datalist: the chosen provider's, or the default provider's.
-  const selectedProvider =
-    providers.find((p) => p.id === providerId) ?? providers.find((p) => p.is_default);
   const defaultProviderName = providers.find((p) => p.is_default)?.name ?? 'default';
 
   const browseTo = useCallback(async (p?: string) => {
@@ -529,7 +567,6 @@ function ProjectDialog({
         name: name.trim() || undefined,
         cwd: cwd.trim(),
         providerId,
-        model: model.trim(),
       };
       if (editing) {
         await api.updateProject(editing.id, payload);
@@ -604,23 +641,6 @@ function ProjectDialog({
             </option>
           ))}
         </select>
-      </div>
-
-      <div className="flex flex-col gap-1.5">
-        <label className="text-[11px] uppercase tracking-wider text-slate-500">Preferred model</label>
-        <input
-          list="project-model-options"
-          value={model}
-          onChange={(e) => setModel(e.target.value)}
-          placeholder="auto (provider's first model)"
-          spellCheck={false}
-          className={inputCls}
-        />
-        <datalist id="project-model-options">
-          {(selectedProvider?.models ?? []).map((m) => (
-            <option key={m} value={m} />
-          ))}
-        </datalist>
       </div>
 
       {browsing && dirs && (

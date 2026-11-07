@@ -262,14 +262,25 @@ app.get('/api/sessions', async (req, reply) => {
 });
 
 app.post('/api/sessions', async (req, reply) => {
-  const body = (req.body ?? {}) as { projectId?: string; title?: string };
+  const body = (req.body ?? {}) as { projectId?: string; title?: string; model?: string };
   if (!body.projectId) return reply.code(400).send({ error: 'projectId is required' });
   try {
-    const session = db.createSession(body.projectId ?? '', { title: body.title });
+    const session = db.createSession(body.projectId, { title: body.title, model: validateModel(body.model) });
     reply.code(201).send(session);
   } catch (err) {
-    reply.code(404).send({ error: String((err as Error).message) });
+    reply.code((err as { statusCode?: number }).statusCode ?? 404).send({
+      error: String((err as Error).message),
+    });
   }
+});
+
+app.patch('/api/sessions/:id', async (req, reply) => {
+  const { id } = req.params as { id: string };
+  if (!db.getSession(id)) return reply.code(404).send({ error: 'session not found' });
+  const body = (req.body ?? {}) as { model?: string };
+  const model = validateModel(body.model);
+  if (model !== undefined) db.setSessionModel(id, model);
+  reply.send(db.getSession(id));
 });
 
 app.delete('/api/sessions/:id', async (req, reply) => {
@@ -337,14 +348,15 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   }
   const providerCreds = { baseUrl: provider.base_url, apiKey: provider.api_key };
 
-  // Model resolution: project setting -> provider's first detected model -> env fallback.
+  // Model resolution: session -> project -> provider's first detected model -> env fallback.
   let firstDetected = '';
   try {
     firstDetected = (JSON.parse(provider.models) as string[])[0] ?? '';
   } catch {
     firstDetected = '';
   }
-  const model = project.model || firstDetected || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+  const model =
+    session.model || project.model || firstDetected || process.env.OPENAI_MODEL || 'gpt-4o-mini';
 
   db.appendMessage(id, { role: 'user', content: body.content.trim() });
   if (session.title === 'New session') {

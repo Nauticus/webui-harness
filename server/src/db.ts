@@ -27,6 +27,7 @@ export interface SessionRow {
   id: string;
   project_id: string;
   title: string;
+  model: string; // '' = resolve from project / provider
   created_at: string;
 }
 
@@ -72,6 +73,7 @@ db.exec(`
     id         TEXT PRIMARY KEY,
     project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
     title      TEXT NOT NULL DEFAULT 'New session',
+    model      TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS messages (
@@ -236,16 +238,20 @@ export function setProviderModels(
 /* ---------- sessions ---------- */
 
 const selectSession = db.prepare(
-  'SELECT id, project_id, title, created_at FROM sessions WHERE id = ?'
+  'SELECT id, project_id, title, model, created_at FROM sessions WHERE id = ?'
 );
 
-export function createSession(projectId: string, input: { title?: string } = {}): SessionRow {
+export function createSession(
+  projectId: string,
+  input: { title?: string; model?: string } = {}
+): SessionRow {
   if (!getProject(projectId)) throw new Error('project not found');
   const id = randomUUID();
-  db.prepare('INSERT INTO sessions (id, project_id, title) VALUES (?, ?, ?)').run(
+  db.prepare('INSERT INTO sessions (id, project_id, title, model) VALUES (?, ?, ?, ?)').run(
     id,
     projectId,
-    input.title?.trim() || 'New session'
+    input.title?.trim() || 'New session',
+    input.model ?? ''
   );
   return selectSession.get(id) as SessionRow;
 }
@@ -253,7 +259,7 @@ export function createSession(projectId: string, input: { title?: string } = {})
 export function listSessions(projectId: string): SessionRow[] {
   return db
     .prepare(
-      'SELECT id, project_id, title, created_at FROM sessions WHERE project_id = ? ORDER BY created_at DESC, id DESC'
+      'SELECT id, project_id, title, model, created_at FROM sessions WHERE project_id = ? ORDER BY created_at DESC, id DESC'
     )
     .all(projectId) as SessionRow[];
 }
@@ -264,6 +270,10 @@ export function getSession(id: string): SessionRow | undefined {
 
 export function setSessionTitle(id: string, title: string): void {
   db.prepare('UPDATE sessions SET title = ? WHERE id = ?').run(title, id);
+}
+
+export function setSessionModel(id: string, model: string): void {
+  db.prepare('UPDATE sessions SET model = ? WHERE id = ?').run(model, id);
 }
 
 export function deleteSession(id: string): void {

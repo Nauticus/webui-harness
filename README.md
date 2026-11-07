@@ -11,7 +11,8 @@ to a workspace directory).
 - **Client**: React + Vite, styled with Tailwind CSS v4 (assistant messages rendered as markdown)
 - **Agent**: any OpenAI-compatible chat API with tool calling (OpenAI, OpenRouter, Ollama, …)
 - **Providers**: OpenAI-compatible endpoints (name, base URL, API key) with automatic model detection; keys are stored in the (in-memory) DB
-- **Projects**: each project picks a working directory, provider and preferred model (server defaults when left blank); sessions live under a project
+- **Projects**: each project picks a working directory and provider (server defaults when left blank); sessions live under a project
+- **Per-chat model**: the model is chosen in the composer (a select next to the prompt), per session
 - No auth — intended for local use only
 
 ## Quick start
@@ -53,15 +54,19 @@ Providers are OpenAI-compatible endpoints, managed via the 🔌 button in the he
 The top level of the UI is the **project**, shown as a tab in the header:
 
 - Each project has a **name**, a **working dir** (`cwd`) — the directory the agent's
-  shell/file tools are confined to — and a **preferred model**. Leaving either blank
-  uses the server default (`AGENT_WORKSPACE_DIR` / `OPENAI_MODEL`).
+  shell/file tools are confined to — and a **provider**. Leaving the dir blank uses the
+  server default (`AGENT_WORKSPACE_DIR`); a blank provider uses the default provider.
 - Creating your first project is the onboarding step; later projects are added with the
-  `+` in the tab bar. Settings (rename, change dir/model, delete) are in the ⚙ dialog.
-- Each project has its own **sessions**. The agent's working dir and model for a turn
+  `+` in the tab bar. Settings (rename, change dir/provider, delete) are in the ⚙ dialog.
+- Each project has its own **sessions**. The agent's working dir and provider for a turn
   always come from the session's project, and the system prompt names the working dir.
 - Deleting a project deletes all of its sessions (FK cascade).
-- **Model resolution** when a project's model is left blank: the provider's first
-  detected model, then `OPENAI_MODEL`, then `gpt-4o-mini`.
+- **Model is chosen per session** via the select in the chat composer (next to the
+  prompt), populated from the resolved provider's detected models. The select defaults
+  to *auto*.
+- **Model resolution** when a session's model is *auto*: the project's model (if set via
+  the API), then the provider's first detected model, then `OPENAI_MODEL`, then
+  `gpt-4o-mini`.
 
 ## Configuration (env)
 
@@ -79,10 +84,10 @@ After first run, providers (and their keys/URLs) live in the DB and are managed 
 
 ```
 Browser (React)
-   │  provider panel (🔌) · project tabs → sessions under the active project
+   │  provider panel (🔌) · project tabs → sessions · composer model select (per session)
    │  POST /api/sessions/:id/messages
    ▼
-Fastify ──▶ Agent loop (server/src/agent.ts)  [cwd + provider + model from the session's project]
+Fastify ──▶ Agent loop (server/src/agent.ts)  [cwd + provider from project · model from session, else provider default]
    │            │  stream: LLM → tool calls → run tools → LLM → … (max 12 steps)
    │            ▼
    │        Tools (server/src/tools.ts): bash, read_file, write_file, list_dir
@@ -110,14 +115,15 @@ server restarts. Swap `new Database(':memory:')` in `server/src/db.ts` for
 - `DELETE /api/providers/:id` — delete (409 while used by projects)
 - `GET /api/projects` — list projects
 - `POST /api/projects` — create project `{ name?, cwd?, providerId?, model? }` (blank fields = defaults)
-- `PATCH /api/projects/:id` — update `{ name?, cwd?, providerId?, model? }`
+- `PATCH /api/projects/:id` — update `{ name?, cwd?, providerId? }`
 - `DELETE /api/projects/:id` — delete project and all its sessions
 - `GET /api/sessions?projectId=<id>` — sessions of a project
-- `POST /api/sessions` — create session `{ projectId, title? }`
+- `POST /api/sessions` — create session `{ projectId, title?, model? }`
+- `PATCH /api/sessions/:id` — update `{ model? }` (per-session model override)
 - `DELETE /api/sessions/:id`
-- `GET /api/sessions/:id` — session + full message history
+- `GET /api/sessions/:id` — session (incl. `model`) + full message history
 - `GET /api/dirs?path=/abs/path` — directory browser data `{ path, parent, dirs[] }`
-- `POST /api/sessions/:id/messages` — `{ content }`, responds with an SSE stream (uses the project's cwd, provider and model)
+- `POST /api/sessions/:id/messages` — `{ content }`, responds with an SSE stream (uses the session's model, else the project's provider + cwd)
 
 ## Project layout
 
