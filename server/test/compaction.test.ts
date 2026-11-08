@@ -10,6 +10,7 @@ import {
   firstKeptSeqOf,
   toLlmMessages,
   compactionThreshold,
+  latestCompactionSeq,
   RESERVE_TOKENS,
   DEFAULT_CONTEXT_WINDOW,
   KEEP_RECENT_TOKENS,
@@ -247,6 +248,53 @@ test('estimateContextTokens: the last valid usage wins', () => {
   ];
   const trailing = estimateTokens([messages[2]!]);
   assert.equal(estimateContextTokens(messages), 5500 + trailing);
+});
+
+test('estimateContextTokens: pi staleness guard ignores pre-compaction usage', () => {
+  const mk = (anchorSeq: number | undefined): CompactableMessage[] => [
+    { role: 'user', content: 'x'.repeat(4000) },
+    { role: 'assistant', content: 'y', ...(anchorSeq !== undefined ? { seq: anchorSeq } : {}), usage: { input: 4000, output: 500 } },
+    { role: 'user', content: 'z'.repeat(400) },
+  ];
+  const trailing = estimateTokens([{ role: 'user', content: 'z'.repeat(400) } as CompactableMessage]);
+  // No boundary: the anchor is used.
+  assert.equal(estimateContextTokens(mk(5)), 4500 + trailing);
+  // Boundary at or past the anchor's seq: stale -> pure estimate.
+  assert.equal(estimateContextTokens(mk(5), 5), estimateTokens(mk(5)));
+  assert.equal(estimateContextTokens(mk(5), 9), estimateTokens(mk(5)));
+  // Boundary before the anchor's seq: fresh -> used.
+  assert.equal(estimateContextTokens(mk(5), 4), 4500 + trailing);
+  // In-turn messages (no seq) are always fresh, even past the boundary.
+  assert.equal(estimateContextTokens(mk(undefined), 9), 4500 + trailing);
+});
+
+test('estimateContextTokens: a stale anchor never shadows a newer in-turn usage', () => {
+  const messages: CompactableMessage[] = [
+    { role: 'assistant', content: 'a', seq: 3, usage: { input: 9000, output: 100 } },
+    { role: 'user', content: 'b'.repeat(400) },
+    { role: 'assistant', content: 'c', usage: { input: 200, output: 20 } }, // in-turn, no seq
+  ];
+  const trailing = 0; // the in-turn anchor is the last message
+  // The walk finds the in-turn usage first; the stale one is never reached.
+  assert.equal(estimateContextTokens(messages, 5), 220 + trailing);
+  // Even when the in-turn usage is all-zero (skipped), the stale anchor is
+  // not picked up: the estimate falls back to the pure one.
+  const zero: CompactableMessage[] = [
+    ...messages.slice(0, 2),
+    { role: 'assistant', content: 'c', usage: { input: 0, output: 0 } },
+  ];
+  assert.equal(estimateContextTokens(zero, 5), estimateTokens(zero));
+});
+
+test('latestCompactionSeq: returns the last compaction record seq', () => {
+  const rows: { role: string; seq: number }[] = [
+    { role: 'user', seq: 1 },
+    { role: 'compaction', seq: 2 },
+    { role: 'assistant', seq: 3 },
+    { role: 'compaction', seq: 7 },
+  ];
+  assert.equal(latestCompactionSeq(rows), 7);
+  assert.equal(latestCompactionSeq(rows.slice(0, 1)), undefined);
 });
 
 test('toLlmMessages: persisted usage is read back onto the message', () => {

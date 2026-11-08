@@ -102,12 +102,19 @@ export function calculateContextTokens(usage: UsageInfo): number {
  * (pi's hybrid): usage covers everything up to that call; messages after it
  * (tool results, the next user message) are estimated with chars/4. Without
  * a usable usage (none captured, or all-zero) the whole context is
- * estimated. A usage only exists on completed calls, so no staleness check
- * is needed in a linear session: every message after the anchor is either
- * newer than it or was estimated, and compaction re-anchors on the next
- * completed call.
+ * estimated.
+ *
+ * `staleUsageBeforeSeq` is pi's staleness guard: the seq of the session's
+ * latest compaction record. Usage persisted at or before that seq describes
+ * the pre-compaction context — a window the model no longer has — so such
+ * anchors are skipped and the walk keeps looking for a newer one. Messages
+ * without a seq (built mid-turn, not persisted yet) are always fresh. When
+ * no fresh anchor survives, the whole context is estimated instead.
  */
-export function estimateContextTokens(messages: CompactableMessage[]): number {
+export function estimateContextTokens(
+  messages: CompactableMessage[],
+  staleUsageBeforeSeq?: number
+): number {
   let usageIdx = -1;
   let usageTokens = 0;
   for (let i = messages.length - 1; i >= 0; i--) {
@@ -115,6 +122,11 @@ export function estimateContextTokens(messages: CompactableMessage[]): number {
     if (m.role === 'assistant' && m.usage) {
       const t = calculateContextTokens(m.usage);
       if (t > 0) {
+        // Persisted at/before the compaction record: it measures a context
+        // that no longer exists. Keep walking for a newer anchor.
+        if (staleUsageBeforeSeq !== undefined && m.seq !== undefined && m.seq <= staleUsageBeforeSeq) {
+          continue;
+        }
         usageIdx = i;
         usageTokens = t;
         break;
@@ -378,6 +390,22 @@ export interface CompactResult {
 export function firstKeptSeqOf(messages: CompactableMessage[], rest: CompactableMessage[]): number | null {
   const firstKept = rest[0]!;
   return firstKept.seq !== undefined ? firstKept.seq - 1 : Math.max(0, ...messages.map((m) => m.seq ?? 0));
+}
+
+/**
+ * Seq of the latest 'compaction' record, or undefined when the session has
+ * never compacted. Used as the staleness boundary for usage anchors: records
+ * at or before it were summarized away, so the usage they carry no longer
+ * describes the context the model sees.
+ */
+export function latestCompactionSeq(
+  rows: { role: HistoryRecord['role']; seq: number }[]
+): number | undefined {
+  let seq: number | undefined;
+  for (const r of rows) {
+    if (r.role === 'compaction') seq = r.seq;
+  }
+  return seq;
 }
 
 /**

@@ -115,14 +115,15 @@ export function contextUsage(
   messages: CompactableMessage[],
   workspace: string,
   contextWindow?: number,
-  skills: Skill[] = []
+  skills: Skill[] = [],
+  staleUsageBeforeSeq?: number
 ): { tokens: number; window: number; threshold: number } {
   const conversation: CompactableMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT(workspace, skills) },
     ...messages,
   ];
   return {
-    tokens: estimateContextTokens(conversation),
+    tokens: estimateContextTokens(conversation, staleUsageBeforeSeq),
     window: contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     threshold: compactionThreshold(contextWindow),
   };
@@ -147,6 +148,10 @@ export async function* runAgentTurn(opts: {
   /** Skills visible to this workspace (advertised in the system prompt,
    *  readable from the sandbox). */
   skills?: Skill[];
+  /** Pi's staleness guard: the latest compaction record's seq (if the
+   *  session has one). Usage anchors persisted at or before it reflect the
+   *  pre-compaction context and are ignored by the token estimates. */
+  staleUsageBeforeSeq?: number;
 }): AsyncGenerator<AgentEvent> {
   const conversation: CompactableMessage[] = [
     { role: 'system', content: SYSTEM_PROMPT(opts.workspace, opts.skills ?? []) },
@@ -163,6 +168,11 @@ export async function* runAgentTurn(opts: {
     model,
     opts.reasoningEffort ?? ''
   );
+  // Pi's staleness guard, tracked across in-place compactions: after one,
+  // every seq'd message in the conversation predates the new compaction
+  // record, so the boundary moves past all of them (in-turn messages have
+  // no seq and stay fresh).
+  let staleBeforeSeq = opts.staleUsageBeforeSeq;
 
   /** True when the user requested a stop (the signal fired, or the SDK
    *  surfaced the abort as its APIUserAbortError). */
@@ -203,12 +213,13 @@ export async function* runAgentTurn(opts: {
       conversation.length = 1;
       conversation.push({ ...summaryAsMessage(c.summary), fileLists: c.fileLists }, ...body.slice(c.firstKeptIndex));
       compactSucceeded = true;
+      staleBeforeSeq = Number.POSITIVE_INFINITY;
       yield {
         type: 'compaction',
         summary: c.summary,
         firstKeptSeq: c.firstKeptSeq,
         tokensBefore: c.tokensBefore,
-        tokensAfter: estimateContextTokens(conversation),
+        tokensAfter: estimateContextTokens(conversation, staleBeforeSeq),
         fileLists: c.fileLists,
       };
     } catch (err) {
@@ -234,11 +245,11 @@ export async function* runAgentTurn(opts: {
 
     // Mid-turn compaction: tool results are the usual context growth; check
     // after each tool round, before the next LLM call.
-    if (!atGuard && step > 0 && estimateContextTokens(conversation.slice(1)) > threshold) {
+    if (!atGuard && step > 0 && estimateContextTokens(conversation.slice(1), staleBeforeSeq) > threshold) {
       yield* compactInPlace('mid-turn');
     }
     // Report the current context size to the UI (also right after compaction).
-    yield { type: 'context', tokens: estimateContextTokens(conversation), window, threshold };
+    yield { type: 'context', tokens: estimateContextTokens(conversation, staleBeforeSeq), window, threshold };
 
     let content = '';
     let reasoning = '';
@@ -257,7 +268,7 @@ export async function* runAgentTurn(opts: {
         yield {
           type: 'message.stopped',
           content,
-          tokens: estimateContextTokens(conversation),
+          tokens: estimateContextTokens(conversation, staleBeforeSeq),
           ...(reasoning ? { reasoning } : {}),
         };
       }
@@ -433,7 +444,7 @@ export async function* runAgentTurn(opts: {
     yield {
       type: 'message.complete',
       content,
-      tokens: estimateContextTokens(conversation),
+      tokens: estimateContextTokens(conversation, staleBeforeSeq),
       ...(reasoning ? { reasoning } : {}),
       ...(usage ? { usage } : {}),
     };

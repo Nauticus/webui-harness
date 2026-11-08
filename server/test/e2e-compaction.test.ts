@@ -28,8 +28,10 @@ const MOCK_SUMMARY =
 
 // ---------- msw-mocked provider ----------
 
-let mockMode: 'normal' | 'error-once' = 'normal';
+let mockMode: 'normal' | 'error-once' | 'hang' = 'normal';
 let errorOnceArmed = false;
+let mockUsage = { prompt: 1234, completion: 56, total: 1290 };
+let mockToolCommand = 'echo mock-hello';
 const mockRequests: Record<string, unknown>[] = [];
 
 /** True when the captured request is a compaction summarizer call. */
@@ -62,10 +64,27 @@ function sseChunks(text: string): unknown[] {
     id: 'm1',
     object: 'chat.completion.chunk',
     choices: [],
-    usage: { prompt_tokens: 1234, completion_tokens: 56, total_tokens: 1290, prompt_tokens_details: { cached_tokens: 100 } },
+    usage: { prompt_tokens: mockUsage.prompt, completion_tokens: mockUsage.completion, total_tokens: mockUsage.total, prompt_tokens_details: { cached_tokens: 100 } },
   });
   out.push({ id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {} }] });
   return out;
+}
+
+/** A stream that emits partial text and then, after a short stall, ends
+ * without a final/usage chunk (a stalled provider that disconnects). The
+ * turn ends without a completed assistant call, so no usage is recorded.
+ * (Deliberately not an abort: aborting an in-flight msw-intercepted
+ * stream trips an undici assert in the mock's virtual socket teardown.) */
+function hangResponse(): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const piece of ['par', 'tial'])
+        controller.enqueue(encoder.encode(`data: ${JSON.stringify({ id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: piece } }] })}\n\n`));
+      setTimeout(() => controller.close(), 1200);
+    },
+  });
+  return new HttpResponse(stream, { headers: { 'Content-Type': 'text/event-stream' } });
 }
 
 function streamToolCall(): unknown[] {
@@ -83,7 +102,7 @@ function streamToolCall(): unknown[] {
                 index: 0,
                 id: 'call_mock_1',
                 type: 'function',
-                function: { name: 'bash', arguments: '{"command":"echo mock-hello"}' },
+                function: { name: 'bash', arguments: JSON.stringify({ command: mockToolCommand }) },
               },
             ],
           },
@@ -122,6 +141,9 @@ const providerServer = setupServer(
     if (isSummarizerReq(parsed)) {
       return sseResponse(sseChunks(MOCK_SUMMARY));
     }
+
+    // A stream that never completes (stopped via the stop API).
+    if (mockMode === 'hang') return hangResponse();
 
     // One-shot context-overflow error for the recovery test.
     if (mockMode === 'error-once' && errorOnceArmed) {
@@ -390,4 +412,57 @@ test('e2e: overflow recovery compacts once and retries the step', { timeout: 60_
   const summaryReq = mockRequests.find((r) => isSummarizerReq(r));
   assert.ok(summaryReq, 'recovery must call the summarizer');
   mockMode = 'normal';
+});
+
+test('e2e: stale usage after a stalled turn does not re-trigger compaction (pi staleness guard)', { timeout: 120_000 }, async () => {
+  // Fresh session; same provider (mock-model-1: window 5000, reserve 2000 ->
+  // threshold 3000, keep-recent 1000).
+  const proj = await post('/api/projects', { name: 'e2e-stale', cwd: workspace });
+  assert.equal(proj.status, 201);
+  const sess = await post('/api/sessions', { projectId: (await proj.json()).id });
+  assert.equal(sess.status, 201);
+  const sessionId = (await sess.json()).id as string;
+
+  // Turn A: a big tool result (~1250 tokens, above the keep-recent budget)
+  // and a large reported usage (4500 > threshold 3000). No compaction fires
+  // (total ~1350 < 3000); the turn completes, leaving a fresh 4500 anchor.
+  mockUsage = { prompt: 4400, completion: 100, total: 4500 };
+  mockToolCommand = "head -c 5000 /dev/zero | tr '\\0' 'y'";
+  const a = await streamTurn(sessionId, 'run a big command');
+  const aComplete = a.find((e) => e.type === 'message.complete');
+  assert.ok(aComplete, 'turn A completes');
+  assert.ok(!a.some((e) => e.type === 'compaction'), 'turn A must not compact (~1350 < 3000)');
+
+  // Turn B: the pre-turn check sees the fresh 4500 anchor -> compaction
+  // (the span is the pre-budget prefix). Then the LLM call stalls and the
+  // stream ends without a final/usage chunk, so no post-compaction usage
+  // is recorded. The newest usage in history is now the stale
+  // pre-compaction 4500 anchor.
+  mockMode = 'hang';
+  const bEvents = await streamTurn(sessionId, 'hang');
+  assert.ok(bEvents.some((e) => e.type === 'compaction'), 'turn B pre-turn compaction');
+  const bEnd = bEvents.find((e) => e.type === 'message.complete');
+  assert.ok(bEnd, 'turn B ends (stalled stream, clean end)');
+  assert.equal(String(bEnd!.content), 'partial', 'the stalled stream delivered only its partial text');
+  mockMode = 'normal';
+  mockUsage = { prompt: 1234, completion: 56, total: 1290 };
+  mockToolCommand = 'echo mock-hello';
+
+  // Turn C: without the guard, the stale 4500 anchor would re-trigger the
+  // pre-turn compaction. With it, the pure estimate (summary + small kept
+  // tail) is under the threshold: no compaction, turn completes.
+  mockRequests.length = 0;
+  const c = await streamTurn(sessionId, 'ok');
+  const cComplete = c.find((e) => e.type === 'message.complete');
+  assert.ok(cComplete, 'turn C completes');
+  assert.ok(!c.some((e) => e.type === 'compaction'), 'turn C must not re-compact on the stale anchor');
+  assert.ok(!mockRequests.some(isSummarizerReq), 'no summarizer call in turn C');
+
+  // The on-load context bar uses the same guard: the reported size is the
+  // pure estimate (well under the threshold), not the stale 4500 anchor.
+  const s = await fetch(`${APP_BASE}/api/sessions/${sessionId}`).then(
+    (r) => r.json() as { context: { tokens: number; threshold: number } | null }
+  );
+  assert.ok(s.context, 'context reported on load');
+  assert.ok(s.context!.tokens < s.context!.threshold, `on-load tokens ${s.context!.tokens} must be under the ${s.context!.threshold} threshold`);
 });

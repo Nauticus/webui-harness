@@ -13,6 +13,7 @@ import {
   compactMessages,
   estimateTokens,
   estimateContextTokens,
+  latestCompactionSeq,
   summaryAsMessage,
   toLlmMessages,
   type CompactableMessage,
@@ -395,7 +396,8 @@ app.get('/api/sessions/:id', async (req, reply) => {
         toLlmMessages(messages),
         project.cwd || DEFAULT_WORKSPACE,
         providerModels.find((m) => m.id === model)?.contextWindow,
-        listSkills(project.cwd || DEFAULT_WORKSPACE)
+        listSkills(project.cwd || DEFAULT_WORKSPACE),
+        latestCompactionSeq(messages)
       );
     }
   }
@@ -527,6 +529,10 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   try {
     const historyRows = await history.readHistory(id, session.project_id);
     let messages = toLlmMessages(historyRows);
+    // Pi's staleness guard: usage anchors persisted at or before the latest
+    // compaction record reflect the pre-compaction context. After a
+    // successful pre-turn compaction the new record's seq is the boundary.
+    let staleBefore = latestCompactionSeq(historyRows);
     // Materialize an explicit /skill:name invocation: history keeps the
     // compact command text (nice on reload); the model gets instructions.
     if (invocation.kind === 'expanded') {
@@ -540,7 +546,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
     }
     // Pre-turn compaction: the context may have grown past the threshold in
     // an earlier turn. Non-fatal — on failure the full context is sent.
-    if (estimateContextTokens(messages) > compactionThreshold(contextWindow)) {
+    if (estimateContextTokens(messages, staleBefore) > compactionThreshold(contextWindow)) {
       let c: CompactResult | undefined;
       try {
         send({ type: 'compaction.start', tokensBefore: estimateContextTokens(messages) });
@@ -567,13 +573,16 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
       }
       if (c) {
         messages = [{ ...summaryAsMessage(c.summary), fileLists: c.fileLists }, ...messages.slice(c.firstKeptIndex)];
-        await history.appendRecord(id, session.project_id, {
+        // Every seq'd message in the rebuilt array predates the compaction
+        // record, so the boundary is past all of them (pi's pattern).
+        const tokensAfter = estimateContextTokens(messages, Number.MAX_SAFE_INTEGER);
+        staleBefore = await history.appendRecord(id, session.project_id, {
           role: 'compaction',
           content: c.summary,
           meta: {
             firstKeptSeq: c.firstKeptSeq,
             tokensBefore: c.tokensBefore,
-            tokensAfter: estimateContextTokens(messages),
+            tokensAfter,
             fileLists: c.fileLists,
           },
         });
@@ -582,12 +591,12 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           summary: c.summary,
           firstKeptSeq: c.firstKeptSeq,
           tokensBefore: c.tokensBefore,
-          tokensAfter: estimateContextTokens(messages),
+          tokensAfter,
           fileLists: c.fileLists,
         });
       }
     }
-    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow, reasoningEffort: effort, skills, signal: stop.signal })) {
+    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow, reasoningEffort: effort, skills, signal: stop.signal, staleUsageBeforeSeq: staleBefore })) {
       send(ev);
       switch (ev.type) {
         case 'message.complete':
