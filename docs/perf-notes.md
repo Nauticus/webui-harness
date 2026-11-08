@@ -70,6 +70,10 @@ Realistic cadence (400 deltas, one every 4ms) before → after:
 
 - Markdown is parsed once per finalized item; a 200 KB single reply still costs
   ~80ms in one commit. If that ever matters, parse in chunks or cache the AST.
-- Virtualizer rows are absolutely positioned with `top: 0` and rely on
-  measurement; row-height churn on long tool output is unmeasured.
 - `rowsToItems` rebuilds every item on session open — fine at current sizes.
+- Row-height churn on very long tool output is unmeasured; measurements are now
+  dropped when a different session is opened, and rows are keyed by tool-call id
+  so a card keeps its measured height across a reopen.
+- A turn that streams thousands of *items* (not one long one) still renders one
+  commit per frame; each commit only touches the changed row (`memo` + identity
+  preserving reducers), so the cost is the virtualizer's own bookkeeping.
