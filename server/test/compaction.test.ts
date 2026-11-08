@@ -51,16 +51,45 @@ test('estimateTokens scales roughly with content size', () => {
 
 test('findCutPoint: tiny conversation has nothing to summarize', () => {
   const msgs = [user('hi'), asst('hello')];
-  assert.equal(findCutPoint(msgs), 0);
+  assert.equal(findCutPoint(msgs).cut, 0);
 });
 
 test('findCutPoint: keeps the tail worth ~KEEP_RECENT_TOKENS', () => {
   const n = 20;
   const msgs = Array.from({ length: n }, (_, i) => user(`${i} ${'word '.repeat(2000)}`)); // ~5k tokens each
-  const cut = findCutPoint(msgs);
+  const { cut } = findCutPoint(msgs);
   const keptTokens = estimateTokens(msgs.slice(cut));
   assert.ok(cut > 0 && cut < n, `cut=${cut}`);
   assert.ok(keptTokens >= KEEP_RECENT_TOKENS * 0.9, `kept=${keptTokens}`);
+});
+
+test('findCutPoint: a mid-turn cut is a split turn pointing at the turn start', () => {
+  const msgs = [
+    user('earlier work'),
+    asst('earlier done'),
+    user('big task'),
+    asst('reading'),
+    callMsg('call_1', 'read_file', { path: 'a.ts' }),
+    toolMsg('call_1', 'read_file', 'x'.repeat(120_000)), // ~30k tokens on its own
+  ];
+  const cp = findCutPoint(msgs);
+  assert.ok(cp.isSplitTurn, 'a cut mid-turn is a split turn');
+  assert.equal(cp.turnStart, 2, 'turnStart is the user message that started the turn');
+  assert.ok(cp.cut > cp.turnStart && cp.cut < msgs.length, `cut=${cp.cut}`);
+  // The kept span never starts with a tool result.
+  assert.ok(msgs[cp.cut]!.role !== 'tool');
+});
+
+test('findCutPoint: a cut at a turn start is not a split turn', () => {
+  const msgs = [
+    user(`one ${'word '.repeat(3000)}`), // ~7.5k tokens each
+    user(`two ${'word '.repeat(3000)}`),
+    user(`three ${'word '.repeat(3000)}`),
+  ];
+  const cp = findCutPoint(msgs);
+  assert.ok(!cp.isSplitTurn);
+  assert.equal(cp.turnStart, -1);
+  assert.equal(msgs[cp.cut]!.role, 'user');
 });
 
 test('findCutPoint: never orphans a tool result from its tool call', () => {
@@ -72,7 +101,7 @@ test('findCutPoint: never orphans a tool result from its tool call', () => {
     user('thanks'),
     asst('done!'),
   ];
-  const cut = findCutPoint(msgs);
+  const { cut } = findCutPoint(msgs);
   // If the raw backwards walk stops at the tool result, back up to its call.
   assert.ok(msgs[cut]!.role !== 'tool');
   if (cut === 3) assert.fail('cut lands on the tool result');

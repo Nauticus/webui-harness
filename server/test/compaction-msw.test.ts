@@ -132,7 +132,7 @@ test('compactMessages: happy path — live progress, result fields, file lists',
 
   // Result fields.
   assert.ok(result.summary.startsWith('## Goal\nsummarize the test'));
-  const cut = findCutPoint(messages);
+  const { cut } = findCutPoint(messages);
   assert.equal(result.firstKeptIndex, cut);
   assert.ok(cut > 0 && cut < messages.length);
   assert.equal(result.tokensBefore, estimateTokens(messages));
@@ -319,4 +319,71 @@ test('compactMessages: aborted signal fails the call', async () => {
     })(),
     Error
   );
+});
+
+test('compactMessages: split turn — history summary + turn prefix checkpoint merged', async () => {
+  captured.length = 0;
+  mockChunks = sseText('## Goal\nsplit test');
+  const messages: CompactableMessage[] = [
+    big('hist-a'),
+    big('hist-b'),
+    big('hist-c'),
+    big('hist-d'),
+    big('hist-e'),
+    big('hist-f'),
+    { role: 'user', content: 'big task' }, // turn start
+    { role: 'assistant', content: 'reading' },
+    toolMsg('read_file', { path: 'a.ts' }, 'c3'),
+    { role: 'tool', tool_call_id: 'c3', name: 'read_file', content: 'x'.repeat(19_900) },
+    { role: 'assistant', content: 'writing' },
+    toolMsg('write_file', { path: 'b.ts', content: 'data' }, 'c4'),
+    { role: 'tool', tool_call_id: 'c4', name: 'write_file', content: 'x'.repeat(120_000) }, // ~30k
+    { role: 'assistant', content: 'done, all written' },
+  ];
+  const cp = findCutPoint(messages);
+  assert.ok(cp.isSplitTurn, 'setup should produce a split turn');
+  const { yields, result } = await runCompact({ messages, provider: creds, model: 'mock-model' });
+  // Two summarizer calls: the history, then the turn prefix.
+  assert.equal(captured.length, 2, 'expected a history and a turn-prefix call');
+  const histPrompt = (captured[0]!.messages as { content: string }[])[1]!.content;
+  const prefixPrompt = (captured[1]!.messages as { content: string }[])[1]!.content;
+  assert.ok(histPrompt.includes('hist-a'), 'history prompt carries the history span');
+  assert.ok(histPrompt.includes('<conversation>'), 'history prompt is the main summary format');
+  assert.ok(!histPrompt.includes('big task'), 'history prompt excludes the split turn');
+  assert.ok(prefixPrompt.includes('big task'), 'turn prefix prompt carries the user request');
+  assert.ok(prefixPrompt.includes('read_file'), 'turn prefix prompt carries the turn tool calls');
+  assert.ok(prefixPrompt.includes('# Instructions'), 'turn prefix prompt uses the checkpoint format');
+  assert.ok(!prefixPrompt.includes('<conversation>'), 'turn prefix is not the main summary format');
+  // Merged summary: history, separator, turn context.
+  assert.ok(result.summary.includes('**Turn Context (split turn):**'));
+  assert.ok(result.summary.includes('## Goal\nsplit test'));
+  // The turn prefix's tool calls are tracked too.
+  assert.deepEqual(result.fileLists, { readFiles: ['a.ts'], modifiedFiles: ['b.ts'] });
+  assert.equal(result.firstKeptIndex, cp.cut);
+  // Live progress from the second call keeps the merged shape.
+  assert.ok(yields[yields.length - 1]!.includes('**Turn Context (split turn):**'));
+});
+
+test('compactMessages: split turn with no history uses "No prior history."', async () => {
+  captured.length = 0;
+  mockChunks = sseText('## Goal\nprefix only');
+  const messages: CompactableMessage[] = [
+    { role: 'user', content: 'big task' },
+    { role: 'assistant', content: 'reading' },
+    toolMsg('read_file', { path: 'a.ts' }, 'c3'),
+    { role: 'tool', tool_call_id: 'c3', name: 'read_file', content: 'x'.repeat(19_900) },
+    { role: 'assistant', content: 'writing' },
+    toolMsg('write_file', { path: 'b.ts', content: 'data' }, 'c4'),
+    { role: 'tool', tool_call_id: 'c4', name: 'write_file', content: 'x'.repeat(120_000) }, // ~30k
+    { role: 'assistant', content: 'done, all written' },
+  ];
+  const cp = findCutPoint(messages);
+  assert.ok(cp.isSplitTurn, 'setup should produce a split turn');
+  assert.equal(cp.turnStart, 0);
+  const { result } = await runCompact({ messages, provider: creds, model: 'mock-model' });
+  // Only one call: the history is empty, so no history summarization.
+  assert.equal(captured.length, 1, 'only the turn-prefix call');
+  assert.ok(result.summary.startsWith('No prior history.'));
+  assert.ok(result.summary.includes('**Turn Context (split turn):**'));
+  assert.deepEqual(result.fileLists, { readFiles: ['a.ts'], modifiedFiles: ['b.ts'] });
 });

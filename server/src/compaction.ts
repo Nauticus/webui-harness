@@ -131,20 +131,61 @@ export function estimateContextTokens(messages: CompactableMessage[]): number {
 }
 
 /**
- * Index of the first message to keep verbatim: accumulate from the end until
- * KEEP_RECENT_TOKENS is reached. The kept span never starts with a tool
- * result (it must stay with its tool_calls), so back up over tool messages.
+ * The cut point of a compaction (pi's findCutPoint shape).
+ * `cut` is the first message kept verbatim. When the cut lands mid-turn,
+ * `turnStart` is the user message that started that turn and the turn's
+ * prefix is summarized separately instead of being cut away (pi's
+ * split-turn handling); `turnStart` is -1 when the cut is at a turn start.
  */
-export function findCutPoint(messages: CompactableMessage[]): number {
+export interface CutPoint {
+  cut: number;
+  turnStart: number;
+  isSplitTurn: boolean;
+}
+
+function isCutPointMessage(m: CompactableMessage): boolean {
+  return m.role === 'user' || m.role === 'assistant';
+}
+
+function isTurnStartMessage(m: CompactableMessage): boolean {
+  return m.role === 'user';
+}
+
+/**
+ * Find the cut point keeping about KEEP_RECENT_TOKENS (pi's algorithm):
+ * walk backwards from the newest accumulating per-message estimates, stop at
+ * the budget, and cut at the closest valid cut point at or after that index
+ * (never a tool result — it must stay with its tool call; when the trailing
+ * tool results exceed the budget by themselves, fall back to the last valid
+ * cut point, i.e. the assistant call before them). Then detect whether the
+ * cut lands mid-turn: if so, the turn's user message is `turnStart`.
+ */
+export function findCutPoint(messages: CompactableMessage[]): CutPoint {
+  const cutPoints: number[] = [];
+  for (let i = 0; i < messages.length; i++) if (isCutPointMessage(messages[i]!)) cutPoints.push(i);
+  if (cutPoints.length === 0) return { cut: 0, turnStart: -1, isSplitTurn: false };
   let acc = 0;
-  let cut = messages.length;
+  let cut = cutPoints[0]!;
   for (let i = messages.length - 1; i >= 0; i--) {
-    cut = i;
-    acc += estimateTokens([messages[i]!]);
-    if (acc >= KEEP_RECENT_TOKENS) break;
+    const t = estimateTokens([messages[i]!]);
+    if (t === 0) continue;
+    acc += t;
+    if (acc >= KEEP_RECENT_TOKENS) {
+      cut = cutPoints.find((c) => c >= i) ?? cutPoints[cutPoints.length - 1]!;
+      break;
+    }
   }
-  while (cut > 0 && messages[cut]!.role === 'tool') cut--;
-  return cut;
+  const startsTurn = isTurnStartMessage(messages[cut]!);
+  let turnStart = -1;
+  if (!startsTurn) {
+    for (let i = cut; i >= 0; i--) {
+      if (isTurnStartMessage(messages[i]!)) {
+        turnStart = i;
+        break;
+      }
+    }
+  }
+  return { cut, turnStart, isSplitTurn: !startsTurn && turnStart !== -1 };
 }
 
 /** Serialize a span to flat text the summarizer will not mistake for a live chat. */
@@ -278,6 +319,21 @@ const UPDATE_SUMMARIZATION_PROMPT =
   'The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\n' +
   UPDATE_SUMMARIZATION_INSTRUCTIONS;
 
+// pi's turn-prefix prompt: a short checkpoint of the split turn's prefix,
+// placed before the kept tail so the conversation can continue.
+const TURN_PREFIX_SUMMARIZATION_PROMPT =
+  'The messages above are earlier context from an ongoing conversation. Later messages are stored separately and do not need to be reconstructed.\n\n' +
+  'Create a concise checkpoint of the user\'s request and the progress shown above. This checkpoint will be placed before the later messages so the conversation can continue with the necessary context.\n\n' +
+  '## Original Request\n[What did the user ask for?]\n\n' +
+  '## Progress So Far\n- [Key decisions and work completed in these messages]\n\n' +
+  '## Context Needed to Continue\n- [Information from these messages needed to understand the later work]\n\n' +
+  'Only summarize information explicitly present above. Do not infer or recreate later messages.';
+
+/** pi's turn-prefix prompt: the conversation, then the checkpoint instructions. */
+function buildTurnPrefixPrompt(serialized: string): string {
+  return `# Conversation\n${serialized}\n\n# Instructions\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
+}
+
 /**
  * The summarizer prompt: the conversation in <conversation> tags, the previous
  * summary in <previous-summary> tags (when present), then the format prompt —
@@ -395,17 +451,16 @@ export async function* compactMessages(opts: {
   const { messages, provider, model, reasoningEffort, signal } = opts;
   const effortParams = effortExtraParams(provider.baseUrl, model, reasoningEffort ?? '');
   const tokensBefore = estimateContextTokens(messages);
-  const cut = findCutPoint(messages);
+  const { cut, turnStart, isSplitTurn } = findCutPoint(messages);
   if (cut <= 0) throw new Error('compaction: nothing to summarize');
-  const span = messages.slice(0, cut);
   const rest = messages.slice(cut);
+  const span = messages.slice(0, cut);
 
   // Iterative compaction: pass the previous summary to the summarizer and
   // carry its file lists forward (structured meta, text-block fallback for
   // records persisted before the meta field existed).
   let previousSummary: string | undefined;
   const prevIdx = span.findIndex(isSummaryMessage);
-  const spanToSerialize = prevIdx === -1 ? span : span.filter((_, i) => i !== prevIdx);
   let prevLists: FileLists = { readFiles: [], modifiedFiles: [] };
   if (prevIdx !== -1) {
     const prevMsg = span[prevIdx]!;
@@ -416,23 +471,18 @@ export async function* compactMessages(opts: {
         ? metaLists
         : { readFiles: parseFileList(previousSummary, 'read-files'), modifiedFiles: parseFileList(previousSummary, 'modified-files') };
   }
-  const ops = collectFileOps(spanToSerialize, prevLists);
-
-  let serialized = serializeSpan(spanToSerialize);
-  if (serialized.length > MAX_SERIALIZED_CHARS) {
-    serialized = `[oldest ${serialized.length - MAX_SERIALIZED_CHARS} chars of this span were too large to include]\n\n` + serialized.slice(-MAX_SERIALIZED_CHARS);
-  }
 
   const client = providerClient(provider);
-  // One summarizer attempt: streams the partial summary, returns the trimmed
-  // full text. A length stop means the summary is truncated — reject it.
-  const runSummarizer = async function* (): AsyncGenerator<string, string> {
+  // One summarizer attempt for a given prompt: streams the partial summary,
+  // returns the trimmed full text. A length stop means the summary is
+  // truncated — reject it.
+  const runSummarizer = async function* (prompt: string): AsyncGenerator<string, string> {
     const stream = await client.chat.completions.create(
       {
         model,
         messages: [
           { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
-          { role: 'user', content: buildSummaryPrompt(previousSummary, serialized) },
+          { role: 'user', content: prompt },
         ] as ChatCompletionMessageParam[],
         stream: true,
         ...effortParams,
@@ -457,9 +507,9 @@ export async function* compactMessages(opts: {
   };
   // Retried once on a transient stream drop (a dropped connection is not a
   // summary failure). Aborts and non-transient errors are never retried.
-  const runWithRetry = async function* (): AsyncGenerator<string, string> {
+  const runWithRetry = async function* (prompt: string): AsyncGenerator<string, string> {
     try {
-      const it = runSummarizer();
+      const it = runSummarizer(prompt);
       let step = await it.next();
       while (!step.done) {
         yield step.value;
@@ -469,7 +519,7 @@ export async function* compactMessages(opts: {
     } catch (err) {
       const transient = err instanceof Error && TRANSIENT_STREAM_RE.test(String(err.message));
       if (!transient || signal?.aborted) throw err;
-      const it = runSummarizer();
+      const it = runSummarizer(prompt);
       let step = await it.next();
       while (!step.done) {
         yield step.value;
@@ -478,14 +528,62 @@ export async function* compactMessages(opts: {
       return step.value;
     }
   };
-  const retryIt = runWithRetry();
-  let step = await retryIt.next();
-  while (!step.done) {
-    yield step.value;
-    step = await retryIt.next();
+  const serialize = (msgs: CompactableMessage[]): string => {
+    let s = serializeSpan(msgs);
+    if (s.length > MAX_SERIALIZED_CHARS) {
+      s = `[oldest ${s.length - MAX_SERIALIZED_CHARS} chars of this span were too large to include]\n\n` + s.slice(-MAX_SERIALIZED_CHARS);
+    }
+    return s;
+  };
+
+  let summary: string;
+  let ops: FileOps;
+  if (isSplitTurn) {
+    // pi's split-turn handling: the cut lands mid-turn, so the turn's prefix
+    // is not cut away — the history before the turn is summarized normally
+    // and the prefix gets its own short checkpoint, merged into one summary.
+    const historySpan = messages.slice(0, turnStart);
+    const turnPrefix = messages.slice(turnStart, cut);
+    const historyToSerialize = prevIdx === -1 ? historySpan : historySpan.filter((_, i) => i !== prevIdx);
+    ops = collectFileOps([...historyToSerialize, ...turnPrefix], prevLists);
+    let historyText: string;
+    if (historyToSerialize.length > 0) {
+      const it = runWithRetry(buildSummaryPrompt(previousSummary, serialize(historyToSerialize)));
+      let step = await it.next();
+      while (!step.done) {
+        yield step.value;
+        step = await it.next();
+      }
+      historyText = step.value;
+      if (!historyText) throw new Error('compaction: model returned an empty history summary');
+    } else {
+      historyText = 'No prior history.';
+    }
+    const prefixIt = runWithRetry(buildTurnPrefixPrompt(serialize(turnPrefix)));
+    let step = await prefixIt.next();
+    let turnPrefixText = '';
+    while (!step.done) {
+      turnPrefixText = step.value;
+      // Live progress keeps the shape of the final merged summary.
+      yield `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${step.value}`;
+      step = await prefixIt.next();
+    }
+    turnPrefixText = step.value;
+    if (!turnPrefixText) throw new Error('compaction: model returned an empty turn prefix summary');
+    summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixText}`;
+  } else {
+    const spanToSerialize = prevIdx === -1 ? span : span.filter((_, i) => i !== prevIdx);
+    if (spanToSerialize.length === 0) throw new Error('compaction: nothing to summarize');
+    ops = collectFileOps(spanToSerialize, prevLists);
+    const it = runWithRetry(buildSummaryPrompt(previousSummary, serialize(spanToSerialize)));
+    let step = await it.next();
+    while (!step.done) {
+      yield step.value;
+      step = await it.next();
+    }
+    summary = step.value;
+    if (!summary) throw new Error('compaction: model returned an empty summary');
   }
-  const summary = step.value;
-  if (!summary) throw new Error('compaction: model returned an empty summary');
 
   const fileLists = computeFileLists(ops);
   return {
