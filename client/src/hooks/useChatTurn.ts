@@ -2,6 +2,7 @@ import { useCallback, useRef, useState, type KeyboardEvent } from 'react';
 import { api, streamTurn, type ContextUsage } from '../api';
 import { rowsToItems, type Item } from '../lib/items';
 import { applyEvent, settleCompaction, type TurnState } from '../lib/chatEvents';
+import { usePendingSelection } from './usePendingSelection';
 
 /**
  * The chat turn engine: items state, the SSE stream loop, send(), and the
@@ -30,8 +31,6 @@ export function useChatTurn(opts: {
    *  turn streams, the server's recomputed value on load. Survives
    *  navigation, so the bar always has something to show. */
   const contextBySessionRef = useRef(new Map<string, ContextUsage>());
-  const [pendingModels, setPendingModels] = useState<Record<string, string>>({});
-  const [pendingEfforts, setPendingEfforts] = useState<Record<string, string>>({});
   const streamedSessionId = useRef<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   /** The session currently displayed in `items` (set by viewSession). */
@@ -41,6 +40,23 @@ export function useChatTurn(opts: {
   const turnRef = useRef<TurnState>({ items: [], streamed: false, context: null });
   const itemsRef = useRef<Item[]>([]);
   itemsRef.current = items;
+
+  // Model and effort share one selection pattern: pending until the first
+  // message creates the session, then a real session patch.
+  const model = usePendingSelection(
+    opts.activeProjectId,
+    opts.activeSessionId,
+    opts.activeSessionModel,
+    (id, v) => api.updateSessionModel(id, v),
+    opts.onSessionModelUpdated
+  );
+  const effort = usePendingSelection(
+    opts.activeProjectId,
+    opts.activeSessionId,
+    opts.activeSessionEffort,
+    (id, v) => api.updateSessionReasoningEffort(id, v),
+    opts.onSessionEffortUpdated
+  );
 
   /** Mirror the running turn's items to `items` state only when the
    *  running session is the one on screen. */
@@ -80,52 +96,6 @@ export function useChatTurn(opts: {
     streamedSessionId.current = null;
   }, []);
 
-  const pendingModelFor = useCallback(
-    (projectId: string) => pendingModels[projectId] ?? '',
-    [pendingModels]
-  );
-  const clearPendingModel = useCallback((projectId: string) => {
-    setPendingModels((prev) => {
-      const next = { ...prev };
-      delete next[projectId];
-      return next;
-    });
-  }, []);
-
-  /** The composer select value: session's model, else the pending pick. */
-  const modelValue =
-    opts.activeSessionId !== null ? opts.activeSessionModel : pendingModels[opts.activeProjectId ?? ''] ?? '';
-
-  const setModel = useCallback(
-    async (v: string) => {
-      if (opts.activeSessionId) {
-        await api.updateSessionModel(opts.activeSessionId, v);
-        opts.onSessionModelUpdated(opts.activeSessionId, v);
-      } else if (opts.activeProjectId) {
-        setPendingModels((prev) => ({ ...prev, [opts.activeProjectId!]: v }));
-      }
-    },
-    [opts]
-  );
-
-  /** The composer's effort value: the session's pick, else the pending one. */
-  const effortValue =
-    opts.activeSessionId !== null
-      ? opts.activeSessionEffort
-      : pendingEfforts[opts.activeProjectId ?? ''] ?? '';
-
-  const setEffort = useCallback(
-    async (v: string) => {
-      if (opts.activeSessionId) {
-        await api.updateSessionReasoningEffort(opts.activeSessionId, v);
-        opts.onSessionEffortUpdated(opts.activeSessionId, v);
-      } else if (opts.activeProjectId) {
-        setPendingEfforts((prev) => ({ ...prev, [opts.activeProjectId!]: v }));
-      }
-    },
-    [opts]
-  );
-
   const send = useCallback(async () => {
     const content = input.trim();
     if (!content || busy || !opts.activeProjectId) return;
@@ -134,19 +104,11 @@ export function useChatTurn(opts: {
     if (!sessionId) {
       const s = await api.createSession(
         opts.activeProjectId,
-        pendingModels[opts.activeProjectId],
-        pendingEfforts[opts.activeProjectId]
+        model.pendingFor(opts.activeProjectId),
+        effort.pendingFor(opts.activeProjectId)
       );
-      setPendingModels((prev) => {
-        const next = { ...prev };
-        delete next[opts.activeProjectId!];
-        return next;
-      });
-      setPendingEfforts((prev) => {
-        const next = { ...prev };
-        delete next[opts.activeProjectId!];
-        return next;
-      });
+      model.clearPending(opts.activeProjectId);
+      effort.clearPending(opts.activeProjectId);
       await opts.refreshSessions(opts.activeProjectId);
       sessionId = s.id;
       // Claim the turn BEFORE navigating: the route-change effect that views
@@ -204,7 +166,7 @@ export function useChatTurn(opts: {
       setRunningSessionId(null);
       setBusy(false);
     }
-  }, [input, busy, mirrorItems, opts]);
+  }, [input, busy, mirrorItems, opts, model, effort]);
 
   /** Stop the running turn: aborts the local stream AND explicitly stops the
    *  server-side agent (the explicit call is what works when a dev proxy
@@ -237,14 +199,14 @@ export function useChatTurn(opts: {
     send,
     abort,
     context,
-    modelValue,
-    setModel,
-    effortValue,
-    setEffort,
+    modelValue: model.value,
+    setModel: model.set,
+    effortValue: effort.value,
+    setEffort: effort.set,
     viewSession,
     clear,
-    pendingModelFor,
-    clearPendingModel,
+    pendingModelFor: model.pendingFor,
+    clearPendingModel: model.clearPending,
     onKeyDown,
   };
 }
