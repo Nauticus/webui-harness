@@ -35,9 +35,6 @@ export function compactionThreshold(contextWindow?: number): number {
 }
 
 const TOOL_RESULT_SERIALIZED_LIMIT = 2000;
-const TOOL_ARGS_SERIALIZED_LIMIT = 400;
-/** Hard cap on the serialized span sent to the summarizer (oldest part dropped). */
-const MAX_SERIALIZED_CHARS = 400_000;
 
 /** Transient stream-drop signatures: the summarizer call is retried once for these. */
 const TRANSIENT_STREAM_RE = /terminated|socket|econnreset|etimedout|econnrefused|fetch failed|network/i;
@@ -188,33 +185,49 @@ export function findCutPoint(messages: CompactableMessage[]): CutPoint {
   return { cut, turnStart, isSplitTurn: !startsTurn && turnStart !== -1 };
 }
 
-/** Serialize a span to flat text the summarizer will not mistake for a live chat. */
+/** pi's truncateForSummary: keeps the beginning and appends a truncation marker. */
+function truncateForSummary(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  const truncatedChars = text.length - maxChars;
+  return `${text.slice(0, maxChars)}\n\n[... ${truncatedChars} more characters truncated]`;
+}
+
+/**
+ * Serialize messages to flat text the summarizer will not mistake for a live
+ * chat (pi's serializeConversation): flat labels, tool-call arguments as
+ * key=value pairs, tool results truncated to TOOL_RESULT_SERIALIZED_LIMIT.
+ * There is no whole-span cap — the per-result truncation keeps the
+ * summarization request within budget (pi's approach).
+ */
 export function serializeSpan(messages: CompactableMessage[]): string {
-  const out: string[] = [];
+  const parts: string[] = [];
   for (const m of messages) {
-    if (isSummaryMessage(m)) {
-      out.push(`[Previous summary]:\n${summaryText(m)}`);
-    } else if (m.role === 'user') {
-      out.push(`[User]: ${m.content ?? ''}`);
+    if (m.role === 'user') {
+      const content = m.content ?? '';
+      if (content) parts.push(`[User]: ${content}`);
     } else if (m.role === 'assistant') {
-      if (m.content) out.push(`[Assistant]: ${m.content}`);
+      if (m.content) parts.push(`[Assistant]: ${m.content}`);
       if (m.tool_calls && m.tool_calls.length > 0) {
-        out.push(
-          `[Assistant tool calls]: ${m.tool_calls
-            .map((tc) => `${tc.function.name}(${tc.function.arguments.slice(0, TOOL_ARGS_SERIALIZED_LIMIT)})`)
-            .join('; ')}`
-        );
+        const toolCalls = m.tool_calls.map((tc) => {
+          let args: Record<string, unknown>;
+          try {
+            args = JSON.parse(tc.function.arguments || '{}');
+          } catch {
+            args = {};
+          }
+          const argsStr = Object.entries(args)
+            .map(([k, v]) => `${k}=${JSON.stringify(v)}`)
+            .join(', ');
+          return `${tc.function.name}(${argsStr})`;
+        });
+        parts.push(`[Assistant tool calls]: ${toolCalls.join('; ')}`);
       }
     } else if (m.role === 'tool') {
-      const c = m.content ?? '';
-      const cut =
-        c.length > TOOL_RESULT_SERIALIZED_LIMIT
-          ? `${c.slice(0, TOOL_RESULT_SERIALIZED_LIMIT)}\n[...${c.length - TOOL_RESULT_SERIALIZED_LIMIT} chars truncated]`
-          : c;
-      out.push(`[Tool ${m.name ?? 'result'}]: ${cut}`);
+      const content = m.content ?? '';
+      if (content) parts.push(`[Tool result]: ${truncateForSummary(content, TOOL_RESULT_SERIALIZED_LIMIT)}`);
     }
   }
-  return out.join('\n\n');
+  return parts.join('\n\n');
 }
 
 interface FileOps {
@@ -528,13 +541,7 @@ export async function* compactMessages(opts: {
       return step.value;
     }
   };
-  const serialize = (msgs: CompactableMessage[]): string => {
-    let s = serializeSpan(msgs);
-    if (s.length > MAX_SERIALIZED_CHARS) {
-      s = `[oldest ${s.length - MAX_SERIALIZED_CHARS} chars of this span were too large to include]\n\n` + s.slice(-MAX_SERIALIZED_CHARS);
-    }
-    return s;
-  };
+  const serialize = (msgs: CompactableMessage[]): string => serializeSpan(msgs);
 
   let summary: string;
   let ops: FileOps;

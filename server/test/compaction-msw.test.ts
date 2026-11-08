@@ -15,7 +15,7 @@ import {
  * Compaction behavior tests with msw mocking the provider's
  * /v1/chat/completions endpoint (SSE). Covers the summarizer request
  * shape, live progress yields, file-list carry-over, iterative
- * compaction, span truncation, and failure paths.
+ * compaction, and failure paths.
  *
  * Note on sizes: with the default KEEP_RECENT_TOKENS (20000) each ~20k-char
  * message is ~5k tokens, so a cut point > 0 needs ~5-6 of them, with the
@@ -264,7 +264,7 @@ test('compactMessages: file lists carry over from structured meta (no text block
   assert.deepEqual(result.fileLists, { readFiles: ['meta-read.ts', 'new.ts'], modifiedFiles: ['meta-mod.ts'] });
 });
 
-test('compactMessages: oversized span is truncated (oldest dropped, tail kept)', async () => {
+test('compactMessages: no whole-span cap — large user content passes through untruncated (pi)', async () => {
   captured.length = 0;
   mockChunks = sseText('## Goal\ntrunc');
   const huge = { role: 'user' as const, content: 'H'.repeat(500_000) };
@@ -272,9 +272,8 @@ test('compactMessages: oversized span is truncated (oldest dropped, tail kept)',
   await runCompact({ messages, provider: creds, model: 'mock-model' });
 
   const prompt = promptOf();
-  assert.ok(prompt.includes('chars of this span were too large to include'));
-  assert.ok(prompt.includes('H'.repeat(1000)), 'tail of the huge message is kept');
-  assert.ok(!prompt.startsWith('H'.repeat(1000)), 'oldest part is dropped');
+  assert.ok(prompt.includes('H'.repeat(1000)), 'user content is not truncated');
+  assert.ok(!prompt.includes('too large to include'), 'no whole-span cap (per-result truncation only)');
 });
 
 test('compactMessages: a length stop rejects the truncated summary', async () => {

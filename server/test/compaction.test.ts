@@ -124,7 +124,7 @@ test('firstKeptSeqOf: mid-turn cut means all persisted records were summarized',
   assert.equal(firstKeptSeqOf(messages, rest), 2); // keep only records with seq > 2
 });
 
-test('serializeSpan: flat labels, truncated tool results, tool-call args', () => {
+test('serializeSpan: flat labels, truncated tool results, key=value tool-call args (pi format)', () => {
   const long = 'y'.repeat(10_000);
   const text = serializeSpan([
     user('do the thing'),
@@ -134,10 +134,24 @@ test('serializeSpan: flat labels, truncated tool results, tool-call args', () =>
   ]);
   assert.ok(text.includes('[User]: do the thing'));
   assert.ok(text.includes('[Assistant]: on it'));
-  assert.ok(text.includes('[Assistant tool calls]: edit_file('));
-  assert.ok(text.includes('[Tool edit_file]: '));
-  assert.ok(text.includes('8000 chars truncated'));
+  // pi's argument formatting: key=JSON.stringify(value) pairs.
+  assert.ok(text.includes('[Assistant tool calls]: edit_file(path="a.ts", edits=[{"oldText":"a","newText":"b"}])'));
+  assert.ok(text.includes('[Tool result]: '));
+  assert.ok(text.includes('8000 more characters truncated'));
   assert.ok(!text.includes('y'.repeat(5000))); // truncated, not full content
+});
+
+test('serializeSpan: empty content is skipped, malformed args fall back to empty', () => {
+  const text = serializeSpan([
+    { role: 'user', content: '' },
+    {
+      role: 'assistant',
+      content: null,
+      tool_calls: [{ id: 'c1', type: 'function', function: { name: 'bash', arguments: 'not-json' } }],
+    },
+  ]);
+  assert.ok(!text.includes('[User]: '));
+  assert.ok(text.includes('[Assistant tool calls]: bash()'));
 });
 
 test('summaryAsMessage + toLlmMessages: compaction record trims old records', () => {
