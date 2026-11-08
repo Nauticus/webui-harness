@@ -5,6 +5,7 @@ import type { Components } from 'react-markdown';
 import type { Skill } from '../api';
 import { type Item, isSkillFile, parseSkillInvocation, toolTarget } from '../lib/items';
 import { ThinkingCard } from './ThinkingCard';
+import { CodeBlock } from './CodeBlock';
 import { ToolCard } from './ToolCard';
 import { CompactionCard } from './CompactionCard';
 import { SkillCard, matchSkill } from './SkillCard';
@@ -13,6 +14,7 @@ import { SkillCard, matchSkill } from './SkillCard';
  *  down a running turn. Open them in a new tab. */
 const MD_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer noopener" />,
+  pre: ({ node: _node, ...props }) => <CodeBlock {...props} />,
 };
 
 /** Memoized: a streaming turn only ever changes the last item, and every

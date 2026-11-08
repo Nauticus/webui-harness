@@ -1,4 +1,4 @@
-import { memo, useEffect, useState, type KeyboardEvent } from 'react';
+import { memo, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Select } from '@base-ui-components/react/select';
 import type { ModelGroup, Skill } from '../api';
 import { fmtTokens } from '../lib/context';
@@ -58,6 +58,15 @@ export const Composer = memo(function Composer({
   skills?: Skill[];
 }) {
   const [acIndex, setAcIndex] = useState(0);
+  const taRef = useRef<HTMLTextAreaElement>(null);
+  // Grow with the draft instead of hiding it behind a scrollbar: max-h-40 caps
+  // the growth and the textarea scrolls from there.
+  useEffect(() => {
+    const el = taRef.current;
+    if (!el) return;
+    el.style.height = '';
+    el.style.height = `${el.scrollHeight}px`;
+  }, [input]);
   /** Escape closes the menu without touching the text; it reopens as soon as
    *  the query changes. */
   const [acDismissed, setAcDismissed] = useState(false);
@@ -161,13 +170,14 @@ export const Composer = memo(function Composer({
           )}
         <div className="flex items-end gap-2 rounded-2xl border border-slate-700 bg-slate-900 p-2 transition-colors focus-within:border-sky-500/60">
           <textarea
+            ref={taRef}
             value={input}
             onChange={(e) => onInput(e.target.value)}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             rows={2}
             disabled={disabled}
-            className="max-h-40 min-h-[3rem] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-slate-600 disabled:opacity-50"
+            className="max-h-40 min-h-[3rem] flex-1 resize-none overflow-y-auto bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-slate-600 disabled:opacity-50"
           />
           {busy ? (
             <button
