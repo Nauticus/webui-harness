@@ -1,6 +1,7 @@
 import { useCallback, useRef, useState, type KeyboardEvent } from 'react';
 import { api, streamTurn, type ContextUsage } from '../api';
 import { rowsToItems, type Item } from '../lib/items';
+import { applyEvent, settleCompaction, type TurnState } from '../lib/chatEvents';
 
 /**
  * The chat turn engine: items state, the SSE stream loop, send(), and the
@@ -31,23 +32,21 @@ export function useChatTurn(opts: {
   const contextBySessionRef = useRef(new Map<string, ContextUsage>());
   const [pendingModels, setPendingModels] = useState<Record<string, string>>({});
   const [pendingEfforts, setPendingEfforts] = useState<Record<string, string>>({});
-  const streamedRef = useRef(false);
   const streamedSessionId = useRef<string | null>(null);
   const controllerRef = useRef<AbortController | null>(null);
   /** The session currently displayed in `items` (set by viewSession). */
   const viewSessionId = useRef<string | null>(null);
-  /** Authoritative in-flight items for the running turn, kept even when
-   *  the user is viewing a different session. */
-  const liveRef = useRef<Item[]>([]);
+  /** Authoritative state of the in-flight turn (items + streamed flag +
+   *  context), kept even when the user is viewing a different session. */
+  const turnRef = useRef<TurnState>({ items: [], streamed: false, context: null });
   const itemsRef = useRef<Item[]>([]);
   itemsRef.current = items;
 
-  /** Apply a mutation to the running turn's live items; mirror to `items`
-   *  state only when the running session is the one on screen. */
-  const applyItems = useCallback((updater: (prev: Item[]) => Item[]) => {
-    liveRef.current = updater(liveRef.current);
+  /** Mirror the running turn's items to `items` state only when the
+   *  running session is the one on screen. */
+  const mirrorItems = useCallback(() => {
     if (streamedSessionId.current === viewSessionId.current) {
-      setItems(liveRef.current);
+      setItems(turnRef.current.items);
     }
   }, []);
 
@@ -62,7 +61,7 @@ export function useChatTurn(opts: {
       return;
     }
     if (streamedSessionId.current === sessionId) {
-      setItems(liveRef.current);
+      setItems(turnRef.current.items);
       setContext(contextBySessionRef.current.get(sessionId) ?? null);
       return;
     }
@@ -159,184 +158,53 @@ export function useChatTurn(opts: {
     setInput('');
     setBusy(true);
     setRunningSessionId(sessionId);
-    streamedRef.current = false;
     const controller = new AbortController();
     controllerRef.current = controller;
     streamedSessionId.current = sessionId;
     // Seed the live buffer with what is currently on screen (history or an
     // empty new session), then append the user item like every other block:
     // the UI matches the server's stream order.
-    liveRef.current = sessionId === viewSessionId.current ? [...itemsRef.current] : [];
-    applyItems((prev) => [...prev, { kind: 'user', content }]);
+    turnRef.current = {
+      items: sessionId === viewSessionId.current ? [...itemsRef.current] : [],
+      streamed: false,
+      context: null,
+    };
+    turnRef.current = { ...turnRef.current, items: [...turnRef.current.items, { kind: 'user', content }] };
+    mirrorItems();
 
     try {
       await streamTurn(sessionId, content, (ev) => {
-        switch (ev.type) {
-          case 'message.delta': {
-            streamedRef.current = true;
-            applyItems((prev) => {
-              const next = prev.map((it) =>
-                it.kind === 'thinking' && !it.done ? { ...it, done: true } : it
-              );
-              const last = next[next.length - 1];
-              if (last && last.kind === 'assistant') {
-                next[next.length - 1] = { kind: 'assistant', content: last.content + String(ev.text) };
-              } else {
-                next.push({ kind: 'assistant', content: String(ev.text) });
-              }
-              return next;
-            });
-            break;
-          }
-          case 'thinking.delta':
-            applyItems((prev) => {
-              const next = [...prev];
-              const last = next[next.length - 1];
-              if (last && last.kind === 'thinking' && !last.done) {
-                next[next.length - 1] = { ...last, content: last.content + String(ev.text) };
-              } else {
-                next.push({ kind: 'thinking', content: String(ev.text), done: false });
-              }
-              return next;
-            });
-            break;
-          case 'tool.start':
-            applyItems((prev) =>
-              prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it))
-            );
-            applyItems((prev) => [
-              ...prev,
-              { kind: 'tool', id: String(ev.id), name: String(ev.name), args: ev.args },
-            ]);
-            break;
-          case 'tool.result':
-            applyItems((prev) =>
-              prev.map((it) =>
-                it.kind === 'tool' && it.id === String(ev.id)
-                  ? {
-                      ...it,
-                      result: String(ev.result),
-                      ...(typeof ev.diff === 'string' ? { diff: ev.diff } : {}),
-                    }
-                  : it
-              )
-            );
-            break;
-          case 'message.complete':
-            applyItems((prev) =>
-              prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it))
-            );
-            if (String(ev.content) && !streamedRef.current) {
-              applyItems((prev) => [...prev, { kind: 'assistant', content: String(ev.content) }]);
-            }
-            if (typeof ev.tokens === 'number') {
-              setContext((c) => (c ? { ...c, tokens: Number(ev.tokens) } : c));
-            }
-            break;
-          case 'message.stopped':
-            // Server-side record of a stop during a non-streamed reply:
-            // show the partial text plus the stopped marker.
-            applyItems((prev) => {
-              const next = prev.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it));
-              if (String(ev.content) && !streamedRef.current) next.push({ kind: 'assistant', content: String(ev.content) });
-              next.push({ kind: 'stopped' });
-              return next;
-            });
-            if (typeof ev.tokens === 'number') {
-              setContext((c) => (c ? { ...c, tokens: Number(ev.tokens) } : c));
-            }
-            break;
-          case 'error':
-            applyItems((prev) => [...prev, { kind: 'error', message: String(ev.message) }]);
-            break;
-          case 'compaction.start':
-            // Compaction began: the old part of the context is being summarized.
-            applyItems((prev) => [
-              ...prev,
-              { kind: 'compaction', status: 'running', tokensBefore: Number(ev.tokensBefore) },
-            ]);
-            break;
-          case 'compaction.progress':
-            // The summarizer is still writing; live token count so far.
-            applyItems((prev) => {
-              for (let i = prev.length - 1; i >= 0; i--) {
-                const it = prev[i]!;
-                if (it.kind === 'compaction' && it.status === 'running') {
-                  const next = [...prev];
-                  next[i] = { ...it, tokensOut: Number(ev.tokensOut) };
-                  return next;
-                }
-              }
-              return prev;
-            });
-            break;
-          case 'compaction':
-            // Compaction finished: fill in the running item (or add a fresh
-            // one if the start event was missed), with the produced summary.
-            applyItems((prev) => {
-              const done: Item = {
-                kind: 'compaction',
-                status: 'done',
-                summary: String(ev.summary),
-                tokensBefore: Number(ev.tokensBefore),
-                tokensAfter: Number(ev.tokensAfter),
-              };
-              for (let i = prev.length - 1; i >= 0; i--) {
-                const it = prev[i]!;
-                if (it.kind === 'compaction' && it.status === 'running') {
-                  const next = [...prev];
-                  next[i] = { ...done, tokensOut: it.tokensOut };
-                  return next;
-                }
-              }
-              return [...prev, done];
-            });
-            if (typeof ev.tokensAfter === 'number') {
-              const sid = streamedSessionId.current;
-              const prev = sid ? contextBySessionRef.current.get(sid) : undefined;
-              if (sid && prev) {
-                const updated = { ...prev, tokens: Number(ev.tokensAfter) };
-                contextBySessionRef.current.set(sid, updated);
-                if (sid === viewSessionId.current) setContext(updated);
-              }
-            }
-            break;
-          case 'context': {
-            const usage: ContextUsage = {
-              tokens: Number(ev.tokens),
-              window: Number(ev.window),
-              threshold: Number(ev.threshold),
-            };
-            const sid = streamedSessionId.current;
-            if (sid) contextBySessionRef.current.set(sid, usage);
-            if (sid === viewSessionId.current) setContext(usage);
-            break;
-          }
-          default:
-            break;
+        turnRef.current = applyEvent(turnRef.current, ev);
+        const sid = streamedSessionId.current;
+        if (sid && turnRef.current.context) {
+          contextBySessionRef.current.set(sid, turnRef.current.context);
         }
+        if (sid === viewSessionId.current && turnRef.current.context) {
+          setContext(turnRef.current.context);
+        }
+        mirrorItems();
       });
       await opts.refreshSessions(opts.activeProjectId);
     } catch (err) {
       // A user stop aborts the fetch; that is not an error (the stop marker
       // was already added by abort()).
       if (err instanceof DOMException && err.name === 'AbortError') return;
-      applyItems((prev) => [
-        ...prev,
-        { kind: 'error', message: String(err instanceof Error ? err.message : err) },
-      ]);
+      turnRef.current = {
+        ...turnRef.current,
+        items: [...turnRef.current.items, { kind: 'error', message: String(err instanceof Error ? err.message : err) }],
+      };
+      mirrorItems();
     } finally {
       // A compaction interrupted by stop/error never gets its end event:
       // settle the running card so it doesn't pulse forever.
-      applyItems((prev) =>
-        prev.map((it) => (it.kind === 'compaction' && it.status === 'running' ? { ...it, status: 'done' as const } : it))
-      );
+      turnRef.current = settleCompaction(turnRef.current);
+      mirrorItems();
       controllerRef.current = null;
       streamedSessionId.current = null;
       setRunningSessionId(null);
       setBusy(false);
     }
-  }, [input, busy, applyItems, opts]);
+  }, [input, busy, mirrorItems, opts]);
 
   /** Stop the running turn: aborts the local stream AND explicitly stops the
    *  server-side agent (the explicit call is what works when a dev proxy
@@ -348,7 +216,8 @@ export function useChatTurn(opts: {
     if (sessionId) {
       fetch(`/api/sessions/${sessionId}/stop`, { method: 'POST' }).catch(() => {});
     }
-    applyItems((prev) => [...prev, { kind: 'stopped' }]);
+    turnRef.current = { ...turnRef.current, items: [...turnRef.current.items, { kind: 'stopped' }] };
+    mirrorItems();
     setBusy(false);
   }, []);
 
