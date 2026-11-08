@@ -29,6 +29,7 @@ export interface LlmMessage {
   name?: string;
   reasoning?: string; // assistant thinking, sent back for multi-turn continuity
   seq?: number; // history row seq when the message came from a persisted record
+  fileLists?: { readFiles: string[]; modifiedFiles: string[] }; // summary message: carried file tracking
 }
 
 export type AgentEvent =
@@ -54,6 +55,7 @@ export type AgentEvent =
       firstKeptSeq: number | null;
       tokensBefore: number;
       tokensAfter: number;
+      fileLists: { readFiles: string[]; modifiedFiles: string[] };
     }
   | { type: 'message.complete'; content: string; tokens: number; reasoning?: string }
   /**
@@ -196,7 +198,7 @@ export async function* runAgentTurn(opts: {
       }
       const c = step.value;
       conversation.length = 1;
-      conversation.push(summaryAsMessage(c.summary), ...body.slice(c.firstKeptIndex));
+      conversation.push({ ...summaryAsMessage(c.summary), fileLists: c.fileLists }, ...body.slice(c.firstKeptIndex));
       compactSucceeded = true;
       yield {
         type: 'compaction',
@@ -204,6 +206,7 @@ export async function* runAgentTurn(opts: {
         firstKeptSeq: c.firstKeptSeq,
         tokensBefore: c.tokensBefore,
         tokensAfter: estimateTokens(conversation),
+        fileLists: c.fileLists,
       };
     } catch (err) {
       if (!isAbort(err)) console.warn(`[weblisan] ${label} compaction failed: ${String(err)}`);

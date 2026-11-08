@@ -130,7 +130,14 @@ export function serializeSpan(messages: CompactableMessage[]): string {
 
 interface FileOps {
   read: Set<string>;
-  modified: Set<string>;
+  written: Set<string>;
+  edited: Set<string>;
+}
+
+/** Computed file lists carried on the summary message and the persisted record. */
+export interface FileLists {
+  readFiles: string[];
+  modifiedFiles: string[];
 }
 
 function parseFileList(summary: string | undefined, tag: string): string[] {
@@ -139,9 +146,27 @@ function parseFileList(summary: string | undefined, tag: string): string[] {
   return m ? (m[1] ?? '').split('\n').map((s) => s.trim()).filter(Boolean) : [];
 }
 
+function addFileOp(toolName: string, args: Record<string, unknown>, ops: FileOps): void {
+  const path = typeof args.path === 'string' ? args.path : undefined;
+  if (!path) return;
+  switch (toolName) {
+    case 'read_file':
+      ops.read.add(path);
+      break;
+    case 'write_file':
+      ops.written.add(path);
+      break;
+    case 'edit_file':
+      ops.edited.add(path);
+      break;
+  }
+}
+
 /** Cumulative file tracking: previous summary's lists + this span's tool calls. */
-function collectFileOps(messages: CompactableMessage[], prev: FileOps): FileOps {
-  const ops: FileOps = { read: new Set(prev.read), modified: new Set(prev.modified) };
+function collectFileOps(messages: CompactableMessage[], prev: FileLists): FileOps {
+  const ops: FileOps = { read: new Set(), written: new Set(), edited: new Set() };
+  for (const f of prev.readFiles) ops.read.add(f);
+  for (const f of prev.modifiedFiles) ops.edited.add(f);
   for (const m of messages) {
     for (const tc of m.tool_calls ?? []) {
       let args: Record<string, unknown>;
@@ -150,20 +175,28 @@ function collectFileOps(messages: CompactableMessage[], prev: FileOps): FileOps 
       } catch {
         continue;
       }
-      const p = typeof args.path === 'string' ? args.path : undefined;
-      if (!p) continue;
-      if (tc.function.name === 'read_file') ops.read.add(p);
-      else if (tc.function.name === 'write_file' || tc.function.name === 'edit_file') ops.modified.add(p);
+      addFileOp(tc.function.name, args, ops);
     }
   }
   return ops;
 }
 
-function appendFileLists(summary: string, ops: FileOps): string {
-  const blocks: string[] = [];
-  if (ops.read.size > 0) blocks.push(`<read-files>\n${[...ops.read].join('\n')}\n</read-files>`);
-  if (ops.modified.size > 0) blocks.push(`<modified-files>\n${[...ops.modified].join('\n')}\n</modified-files>`);
-  return blocks.length > 0 ? `${summary}\n\n${blocks.join('\n\n')}` : summary;
+/**
+ * Compute final file lists from file operations (pi semantics): readFiles are
+ * files only read, not modified; modifiedFiles = written ∪ edited. Sorted.
+ */
+function computeFileLists(ops: FileOps): FileLists {
+  const modified = new Set([...ops.edited, ...ops.written]);
+  const readFiles = [...ops.read].filter((f) => !modified.has(f)).sort();
+  const modifiedFiles = [...modified].sort();
+  return { readFiles, modifiedFiles };
+}
+
+function formatFileOperations({ readFiles, modifiedFiles }: FileLists): string {
+  const sections: string[] = [];
+  if (readFiles.length > 0) sections.push(`<read-files>\n${readFiles.join('\n')}\n</read-files>`);
+  if (modifiedFiles.length > 0) sections.push(`<modified-files>\n${modifiedFiles.join('\n')}\n</modified-files>`);
+  return sections.length > 0 ? `\n\n${sections.join('\n\n')}` : '';
 }
 
 const SUMMARY_SYSTEM_PROMPT =
@@ -215,6 +248,8 @@ export interface CompactResult {
   /** Persisted records with seq > firstKeptSeq are kept verbatim (null = keep all). */
   firstKeptSeq: number | null;
   tokensBefore: number;
+  /** Computed file lists (pi semantics), persisted on the record's meta. */
+  fileLists: FileLists;
 }
 
 /**
@@ -238,15 +273,27 @@ export function firstKeptSeqOf(messages: CompactableMessage[], rest: Compactable
 export function toLlmMessages(rows: HistoryRecord[]): CompactableMessage[] {
   let summary: string | null = null;
   let firstKeptSeq: number | null = null;
+  let fileLists: FileLists | null = null;
   for (const r of rows) {
     if (r.role === 'compaction') {
       summary = r.content;
-      const fks = (r.meta as { firstKeptSeq?: unknown } | undefined)?.firstKeptSeq;
-      firstKeptSeq = typeof fks === 'number' ? fks : null;
+      const meta = (r.meta ?? {}) as {
+        firstKeptSeq?: unknown;
+        fileLists?: { readFiles?: unknown; modifiedFiles?: unknown };
+      };
+      firstKeptSeq = typeof meta.firstKeptSeq === 'number' ? meta.firstKeptSeq : null;
+      // Structured lists from the record's meta; fall back to the text
+      // blocks for records persisted before the meta field existed.
+      const rl = meta.fileLists?.readFiles;
+      const ml = meta.fileLists?.modifiedFiles;
+      fileLists =
+        Array.isArray(rl) && Array.isArray(ml)
+          ? { readFiles: rl.map(String), modifiedFiles: ml.map(String) }
+          : { readFiles: parseFileList(r.content, 'read-files'), modifiedFiles: parseFileList(r.content, 'modified-files') };
     }
   }
   const out: CompactableMessage[] = [];
-  if (summary) out.push(summaryAsMessage(summary));
+  if (summary) out.push({ ...summaryAsMessage(summary), ...(fileLists ? { fileLists } : {}) });
   for (const r of rows) {
     if (r.role === 'compaction') continue;
     if (summary && firstKeptSeq !== null && r.seq <= firstKeptSeq) continue;
@@ -293,16 +340,22 @@ export async function* compactMessages(opts: {
   const rest = messages.slice(cut);
 
   // Iterative compaction: pass the previous summary to the summarizer and
-  // carry its file lists forward.
+  // carry its file lists forward (structured meta, text-block fallback for
+  // records persisted before the meta field existed).
   let previousSummary: string | undefined;
   const prevIdx = span.findIndex(isSummaryMessage);
   const spanToSerialize = prevIdx === -1 ? span : span.filter((_, i) => i !== prevIdx);
-  if (prevIdx !== -1) previousSummary = summaryText(span[prevIdx]!);
-
-  const ops = collectFileOps(spanToSerialize, {
-    read: new Set(parseFileList(previousSummary, 'read-files')),
-    modified: new Set(parseFileList(previousSummary, 'modified-files')),
-  });
+  let prevLists: FileLists = { readFiles: [], modifiedFiles: [] };
+  if (prevIdx !== -1) {
+    const prevMsg = span[prevIdx]!;
+    previousSummary = summaryText(prevMsg);
+    const metaLists = prevMsg.fileLists;
+    prevLists =
+      metaLists && Array.isArray(metaLists.readFiles) && Array.isArray(metaLists.modifiedFiles)
+        ? metaLists
+        : { readFiles: parseFileList(previousSummary, 'read-files'), modifiedFiles: parseFileList(previousSummary, 'modified-files') };
+  }
+  const ops = collectFileOps(spanToSerialize, prevLists);
 
   let serialized = serializeSpan(spanToSerialize);
   if (serialized.length > MAX_SERIALIZED_CHARS) {
@@ -373,10 +426,12 @@ export async function* compactMessages(opts: {
   const summary = step.value;
   if (!summary) throw new Error('compaction: model returned an empty summary');
 
+  const fileLists = computeFileLists(ops);
   return {
-    summary: appendFileLists(summary, ops),
+    summary: summary + formatFileOperations(fileLists),
     firstKeptIndex: cut,
     firstKeptSeq: firstKeptSeqOf(messages, rest),
     tokensBefore,
+    fileLists,
   };
 }

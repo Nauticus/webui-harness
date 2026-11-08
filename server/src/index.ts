@@ -563,7 +563,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
         app.log.warn(`pre-turn compaction failed: ${String(err)}`);
       }
       if (c) {
-        messages = [summaryAsMessage(c.summary), ...messages.slice(c.firstKeptIndex)];
+        messages = [{ ...summaryAsMessage(c.summary), fileLists: c.fileLists }, ...messages.slice(c.firstKeptIndex)];
         await history.appendRecord(id, session.project_id, {
           role: 'compaction',
           content: c.summary,
@@ -571,6 +571,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
             firstKeptSeq: c.firstKeptSeq,
             tokensBefore: c.tokensBefore,
             tokensAfter: estimateTokens(messages),
+            fileLists: c.fileLists,
           },
         });
         send({
@@ -579,6 +580,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           firstKeptSeq: c.firstKeptSeq,
           tokensBefore: c.tokensBefore,
           tokensAfter: estimateTokens(messages),
+          fileLists: c.fileLists,
         });
       }
     }
@@ -628,7 +630,12 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           await history.appendRecord(id, session.project_id, {
             role: 'compaction',
             content: ev.summary,
-            meta: { firstKeptSeq: ev.firstKeptSeq, tokensBefore: ev.tokensBefore, tokensAfter: ev.tokensAfter },
+            meta: {
+              firstKeptSeq: ev.firstKeptSeq,
+              tokensBefore: ev.tokensBefore,
+              tokensAfter: ev.tokensAfter,
+              fileLists: ev.fileLists,
+            },
           });
           break;
         default:

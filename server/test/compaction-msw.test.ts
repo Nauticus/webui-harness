@@ -139,9 +139,10 @@ test('compactMessages: happy path — live progress, result fields, file lists',
   // All messages are mid-turn (no seq) -> boundary = max persisted seq = 0.
   assert.equal(result.firstKeptSeq, 0);
 
-  // File lists extracted from the span's tool calls.
+  // File lists extracted from the span's tool calls (pi semantics, sorted).
   assert.ok(result.summary.includes('<read-files>\na.ts\n</read-files>'));
   assert.ok(result.summary.includes('<modified-files>\nb.ts\n</modified-files>'));
+  assert.deepEqual(result.fileLists, { readFiles: ['a.ts'], modifiedFiles: ['b.ts'] });
 
   // Request shape: system prompt + conversation in <conversation> tags.
   assert.equal(captured.length, 1);
@@ -220,6 +221,47 @@ test('compactMessages: iterative — previous summary is merged and file lists c
   assert.ok(read.includes('prev.ts') && read.includes('new.ts'), read.join(','));
   const modified = result.summary.match(/<modified-files>\n([\s\S]*?)\n<\/modified-files>/)![1]!.split('\n');
   assert.deepEqual(modified, ['old-mod.ts']);
+  assert.deepEqual(result.fileLists, { readFiles: ['new.ts', 'prev.ts'], modifiedFiles: ['old-mod.ts'] });
+});
+
+test('compactMessages: a read-then-written file lands in modified only', async () => {
+  captured.length = 0;
+  mockChunks = sseText('## Goal\nthree sets');
+  const messages = [
+    toolMsg('read_file', { path: 'both.ts' }, 'c1'),
+    toolMsg('write_file', { path: 'both.ts' }, 'c2'),
+    toolMsg('read_file', { path: 'only-read.ts' }, 'c3'),
+    big('one'),
+    big('two'),
+    big('three'),
+    big('four'),
+    big('five'),
+    big('six'),
+    big('seven'),
+  ];
+  const { result } = await runCompact({ messages, provider: creds, model: 'mock-model' });
+  // both.ts was read and written -> modified only; only-read.ts -> read only.
+  assert.deepEqual(result.fileLists, { readFiles: ['only-read.ts'], modifiedFiles: ['both.ts'] });
+  assert.ok(!result.summary.includes('both.ts\n</read-files>'), 'written file must not be in read-files');
+});
+
+test('compactMessages: file lists carry over from structured meta (no text blocks)', async () => {
+  captured.length = 0;
+  mockChunks = sseText('## Goal\nmeta carry');
+  const messages = [
+    // Previous summary without text blocks: lists live on the message meta only.
+    { ...summaryAsMessage('## Goal\nold goal'), fileLists: { readFiles: ['meta-read.ts'], modifiedFiles: ['meta-mod.ts'] } },
+    toolMsg('read_file', { path: 'new.ts' }, 'c1'),
+    big('one'),
+    big('two'),
+    big('three'),
+    big('four'),
+    big('five'),
+    big('six'),
+    big('seven'),
+  ];
+  const { result } = await runCompact({ messages, provider: creds, model: 'mock-model' });
+  assert.deepEqual(result.fileLists, { readFiles: ['meta-read.ts', 'new.ts'], modifiedFiles: ['meta-mod.ts'] });
 });
 
 test('compactMessages: oversized span is truncated (oldest dropped, tail kept)', async () => {
