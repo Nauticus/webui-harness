@@ -25,6 +25,8 @@ export interface Provider {
   model_groups: ModelGroup[]; // models collapsed into base models (alias groups)
   models_error: string; // '' = detection ok
   models_checked_at: string | null;
+  default_model: string; // '' = auto (first detected model)
+  default_reasoning_effort: string; // '' = auto (provider/SDK default)
   used_by: number; // projects using this provider
   created_at: string;
 }
@@ -36,6 +38,10 @@ export interface ProviderInput {
   isDefault?: boolean;
   /** Per-model context windows (tokens); null = clear. Applied on update. */
   modelContextWindows?: Record<string, number | null>;
+  /** Provider's default model; '' = auto (first detected model). */
+  defaultModel?: string;
+  /** Provider's default reasoning effort; '' = auto. */
+  defaultReasoningEffort?: string;
 }
 
 export interface Project {

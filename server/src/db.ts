@@ -22,6 +22,8 @@ export interface ProviderRow {
   models: string; // JSON ProviderModel[] (legacy: string[]) of detected models
   models_error: string; // last detection error ('' = ok)
   models_checked_at: string | null;
+  default_model: string; // '' = auto (first detected model)
+  default_reasoning_effort: string; // '' = auto (provider/SDK default)
   created_at: string;
 }
 
@@ -82,6 +84,8 @@ db.exec(`
     models            TEXT NOT NULL DEFAULT '[]',
     models_error      TEXT NOT NULL DEFAULT '',
     models_checked_at TEXT,
+    default_model        TEXT NOT NULL DEFAULT '',
+    default_reasoning_effort TEXT NOT NULL DEFAULT '',
     created_at        TEXT NOT NULL DEFAULT (datetime('now'))
   );
   CREATE TABLE IF NOT EXISTS projects (
@@ -111,6 +115,16 @@ const sessionCols = (db.prepare('PRAGMA table_info(sessions)').all() as { name: 
 );
 if (!sessionCols.includes('reasoning_effort')) {
   db.exec("ALTER TABLE sessions ADD COLUMN reasoning_effort TEXT NOT NULL DEFAULT ''");
+}
+
+const providerCols = (db.prepare('PRAGMA table_info(providers)').all() as { name: string }[]).map(
+  (c) => c.name
+);
+if (!providerCols.includes('default_model')) {
+  db.exec("ALTER TABLE providers ADD COLUMN default_model TEXT NOT NULL DEFAULT ''");
+}
+if (!providerCols.includes('default_reasoning_effort')) {
+  db.exec("ALTER TABLE providers ADD COLUMN default_reasoning_effort TEXT NOT NULL DEFAULT ''");
 }
 
 /* ---------- projects ---------- */
@@ -179,10 +193,12 @@ export interface ProviderInput {
   baseUrl?: string;
   apiKey?: string;
   isDefault?: boolean;
+  defaultModel?: string;
+  defaultReasoningEffort?: string;
 }
 
 const selectProvider = db.prepare(
-  'SELECT id, name, base_url, api_key, is_default, models, models_error, models_checked_at, created_at FROM providers WHERE id = ?'
+  'SELECT id, name, base_url, api_key, is_default, models, models_error, models_checked_at, default_model, default_reasoning_effort, created_at FROM providers WHERE id = ?'
 );
 
 export function createProvider(input: ProviderInput): ProviderRow {
@@ -190,13 +206,21 @@ export function createProvider(input: ProviderInput): ProviderRow {
   const name = input.name.trim();
   if (!name) throw new Error('provider name is required');
   const insert = db.prepare(
-    'INSERT INTO providers (id, name, base_url, api_key, is_default) VALUES (?, ?, ?, ?, ?)'
+    'INSERT INTO providers (id, name, base_url, api_key, is_default, default_model, default_reasoning_effort) VALUES (?, ?, ?, ?, ?, ?, ?)'
   );
   const tx = db.transaction(() => {
     if (input.isDefault) {
       db.prepare('UPDATE providers SET is_default = 0').run();
     }
-    insert.run(id, name, input.baseUrl ?? '', input.apiKey ?? '', input.isDefault ? 1 : 0);
+    insert.run(
+      id,
+      name,
+      input.baseUrl ?? '',
+      input.apiKey ?? '',
+      input.isDefault ? 1 : 0,
+      input.defaultModel ?? '',
+      input.defaultReasoningEffort ?? ''
+    );
   });
   tx();
   return selectProvider.get(id) as ProviderRow;
@@ -225,7 +249,14 @@ export function getProvider(id: string): ProviderRow | undefined {
 
 export function updateProvider(
   id: string,
-  patch: { name?: string; baseUrl?: string; apiKey?: string; isDefault?: boolean }
+  patch: {
+    name?: string;
+    baseUrl?: string;
+    apiKey?: string;
+    isDefault?: boolean;
+    defaultModel?: string;
+    defaultReasoningEffort?: string;
+  }
 ): ProviderRow | undefined {
   const current = getProvider(id);
   if (!current) return undefined;
@@ -234,11 +265,15 @@ export function updateProvider(
     if (patch.isDefault === true) {
       db.prepare('UPDATE providers SET is_default = 0 WHERE id != ?').run(id);
     }
-    db.prepare('UPDATE providers SET name = ?, base_url = ?, api_key = ?, is_default = ? WHERE id = ?').run(
+    db.prepare(
+      'UPDATE providers SET name = ?, base_url = ?, api_key = ?, is_default = ?, default_model = ?, default_reasoning_effort = ? WHERE id = ?'
+    ).run(
       name,
       patch.baseUrl ?? current.base_url,
       patch.apiKey ?? current.api_key,
       patch.isDefault === true ? 1 : patch.isDefault === false ? 0 : current.is_default,
+      patch.defaultModel ?? current.default_model,
+      patch.defaultReasoningEffort ?? current.default_reasoning_effort,
       id
     );
   });

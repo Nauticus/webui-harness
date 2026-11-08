@@ -1,9 +1,26 @@
 import { useState } from 'react';
+import { Select } from '@base-ui-components/react/select';
 import { api, type Provider, type ProviderInput } from '../../api';
 import { Panel } from './Panel';
 
 const INPUT_CLS =
   'rounded-lg border border-slate-700 bg-slate-950 px-3 py-2 font-mono text-xs text-slate-200 outline-none placeholder:text-slate-600 focus:border-sky-500';
+
+const SELECT_TRIGGER_CLS =
+  'h-9 w-full rounded-lg border border-slate-700 bg-slate-950 px-3 font-mono text-xs text-slate-200 outline-none transition-colors hover:border-slate-600 focus:border-sky-500 disabled:opacity-50';
+const SELECT_POSITIONER_CLS = 'z-50 w-[var(--anchor-width)] outline-none';
+const SELECT_POPUP_CLS =
+  'max-h-52 min-w-[var(--anchor-width)] overflow-auto rounded-lg border border-slate-700 bg-slate-900 py-1 shadow-xl shadow-black/40 outline-none';
+const SELECT_ITEM_ROW_CLS =
+  'flex min-h-7 items-center justify-between gap-3 px-2.5 py-1 text-xs text-slate-300 outline-none select-none group-data-[selected]:text-sky-400 group-data-[highlighted]:bg-slate-800';
+
+const EFFORT_OPTIONS: { value: string; label: string; hint: string }[] = [
+  { value: '', label: 'auto', hint: 'provider default' },
+  { value: 'low', label: 'low', hint: 'quick, cheap' },
+  { value: 'medium', label: 'medium', hint: 'balanced' },
+  { value: 'high', label: 'high', hint: 'thorough' },
+  { value: 'xhigh', label: 'xhigh', hint: 'deepest' },
+];
 
 export function ProvidersPanel({
   providers,
@@ -20,6 +37,8 @@ export function ProvidersPanel({
   const [formKey, setFormKey] = useState('');
   const [formDefault, setFormDefault] = useState(false);
   const [formContextWindows, setFormContextWindows] = useState<Record<string, string>>({});
+  const [formDefaultModel, setFormDefaultModel] = useState('');
+  const [formDefaultEffort, setFormDefaultEffort] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [detecting, setDetecting] = useState<string | null>(null);
@@ -30,6 +49,8 @@ export function ProvidersPanel({
     setFormKey('');
     setFormDefault(providers.length === 0);
     setFormContextWindows({});
+    setFormDefaultModel('');
+    setFormDefaultEffort('');
     setError(null);
     setEditing('new');
   };
@@ -43,6 +64,8 @@ export function ProvidersPanel({
         p.model_groups.map((g) => [g.id, g.contextWindow !== undefined ? String(g.contextWindow) : ''])
       )
     );
+    setFormDefaultModel(p.default_model);
+    setFormDefaultEffort(p.default_reasoning_effort);
     setError(null);
     setEditing(p);
   };
@@ -67,6 +90,8 @@ export function ProvidersPanel({
       baseUrl: formUrl,
       apiKey: formKey,
       isDefault: formDefault,
+      defaultModel: formDefaultModel,
+      defaultReasoningEffort: formDefaultEffort,
     };
     // Only send per-model context windows that actually changed. A value
     // entered on a base model is applied to all of its aliases/snapshots.
@@ -160,6 +185,12 @@ export function ProvidersPanel({
               </div>
               <div className="truncate font-mono text-[10px] text-slate-500">
                 {p.base_url || 'api.openai.com (official)'}
+                {p.default_model && (
+                  <span className="text-slate-600"> · default model {p.default_model}</span>
+                )}
+                {p.default_reasoning_effort && (
+                  <span className="text-slate-600"> · effort {p.default_reasoning_effort}</span>
+                )}
               </div>
             </div>
             <div className="w-40 shrink-0 text-right text-[11px]">
@@ -255,9 +286,87 @@ export function ProvidersPanel({
               </label>
             </div>
           </div>
-          <p className="text-[11px] text-slate-600">
-            Models are detected from the provider on save (and via ↻). A failed detection keeps
-            the provider usable — type model names freely in project settings.
+          <div className="grid grid-cols-2 gap-2.5">
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500">
+                Default model
+              </label>
+              <Select.Root
+                value={formDefaultModel}
+                onValueChange={(v) => setFormDefaultModel(String(v))}
+                isItemEqualToValue={(item, value) => item === value}
+              >
+                <Select.Trigger className={SELECT_TRIGGER_CLS} aria-label="Default model">
+                  <Select.Value />
+                </Select.Trigger>
+                <Select.Portal>
+                  <Select.Positioner sideOffset={4} className={SELECT_POSITIONER_CLS}>
+                    <Select.Popup className={SELECT_POPUP_CLS}>
+                      <Select.List>
+                        <Select.Item
+                          value={''}
+                          className={SELECT_ITEM_ROW_CLS}
+                        >
+                          <span>auto</span>
+                          <span className="text-[10px] text-slate-500">first detected</span>
+                        </Select.Item>
+                        {editing !== 'new' &&
+                          editing.model_groups.map((g) => (
+                            <Select.Item
+                              key={g.id}
+                              value={g.id}
+                              className={SELECT_ITEM_ROW_CLS}
+                            >
+                              <span className="truncate">{g.id}</span>
+                              {g.aliases.length > 0 && (
+                                <span className="shrink-0 text-[10px] text-slate-500">
+                                  +{g.aliases.length}
+                                </span>
+                              )}
+                            </Select.Item>
+                          ))}
+                      </Select.List>
+                    </Select.Popup>
+                  </Select.Positioner>
+                </Select.Portal>
+              </Select.Root>
+            </div>
+            <div className="flex flex-col gap-1">
+              <label className="text-[10px] uppercase tracking-wider text-slate-500">
+                Default reasoning effort
+              </label>
+              <Select.Root
+                value={formDefaultEffort}
+                onValueChange={(v) => setFormDefaultEffort(String(v))}
+                isItemEqualToValue={(item, value) => item === value}
+              >
+                <Select.Trigger className={SELECT_TRIGGER_CLS} aria-label="Default reasoning effort">
+                  <Select.Value />
+                </Select.Trigger>
+                <Select.Portal>
+                  <Select.Positioner sideOffset={4} className={SELECT_POSITIONER_CLS}>
+                    <Select.Popup className={SELECT_POPUP_CLS}>
+                      <Select.List>
+                        {EFFORT_OPTIONS.map((o) => (
+                          <Select.Item
+                            key={o.label}
+                            value={o.value}
+                            className={SELECT_ITEM_ROW_CLS}
+                          >
+                            <span>{o.label}</span>
+                            <span className="text-[10px] text-slate-500">{o.hint}</span>
+                          </Select.Item>
+                        ))}
+                      </Select.List>
+                    </Select.Popup>
+                  </Select.Positioner>
+                </Select.Portal>
+              </Select.Root>
+            </div>
+          </div>
+          <p className="-mt-1.5 text-[11px] text-slate-600">
+            Used by chats that pick "auto" in the composer (sessions/projects with no explicit
+            model or effort).
           </p>
           {editing !== 'new' && editing && editing.models.length > 0 && (
             <div className="flex flex-col gap-1.5">

@@ -123,16 +123,23 @@ app.post('/api/providers', async (req, reply) => {
     baseUrl?: string;
     apiKey?: string;
     isDefault?: boolean;
+    defaultModel?: string;
+    defaultReasoningEffort?: string;
   };
   try {
     if (typeof body.name !== 'string' || !body.name.trim()) {
       return reply.code(400).send({ error: 'provider name is required' });
+    }
+    if (body.defaultReasoningEffort !== undefined && !isReasoningEffort(body.defaultReasoningEffort)) {
+      return reply.code(400).send({ error: 'defaultReasoningEffort must be one of "", low, medium, high, xhigh' });
     }
     const row = db.createProvider({
       name: body.name,
       baseUrl: typeof body.baseUrl === 'string' ? body.baseUrl.trim() : '',
       apiKey: typeof body.apiKey === 'string' ? body.apiKey.trim() : '',
       isDefault: body.isDefault === true,
+      defaultModel: typeof body.defaultModel === 'string' ? body.defaultModel.trim() : '',
+      defaultReasoningEffort: body.defaultReasoningEffort ?? '',
     });
     const detected = await detectModels({ baseUrl: row.base_url, apiKey: row.api_key });
     db.setProviderModels(row.id, detected);
@@ -153,6 +160,8 @@ app.patch('/api/providers/:id', async (req, reply) => {
     apiKey?: string;
     isDefault?: boolean;
     modelContextWindows?: Record<string, number | null>;
+    defaultModel?: string;
+    defaultReasoningEffort?: string;
   };
   const current = db.getProvider(id);
   if (!current) return reply.code(404).send({ error: 'provider not found' });
@@ -166,6 +175,12 @@ app.patch('/api/providers/:id', async (req, reply) => {
       }
     }
   }
+  if (body.defaultModel !== undefined && typeof body.defaultModel !== 'string') {
+    return reply.code(400).send({ error: 'defaultModel must be a string (empty for the default)' });
+  }
+  if (body.defaultReasoningEffort !== undefined && !isReasoningEffort(body.defaultReasoningEffort)) {
+    return reply.code(400).send({ error: 'defaultReasoningEffort must be one of "", low, medium, high, xhigh' });
+  }
   try {
     const changedUrl = typeof body.baseUrl === 'string' && body.baseUrl.trim() !== current.base_url;
     const changedKey =
@@ -176,6 +191,9 @@ app.patch('/api/providers/:id', async (req, reply) => {
       apiKey:
         typeof body.apiKey === 'string' && body.apiKey !== KEY_MASK ? body.apiKey.trim() : undefined,
       isDefault: typeof body.isDefault === 'boolean' ? body.isDefault : undefined,
+      defaultModel:
+        typeof body.defaultModel === 'string' ? body.defaultModel.trim() : undefined,
+      defaultReasoningEffort: body.defaultReasoningEffort,
     });
     if (changedUrl || changedKey) {
       const updated = db.getProvider(id)!;
@@ -367,6 +385,7 @@ app.get('/api/sessions/:id', async (req, reply) => {
       const model =
         session.model ||
         project.model ||
+        provider?.default_model ||
         providerModels[0]?.id ||
         process.env.OPENAI_MODEL ||
         'gpt-4o-mini';
@@ -461,11 +480,19 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
   }
   const providerCreds = { baseUrl: provider.base_url, apiKey: provider.api_key };
 
-  // Model resolution: session -> project -> provider's first detected model -> env fallback.
+  // Model resolution: session -> project -> provider's chosen default ->
+  // provider's first detected model -> env fallback.
   const providerModels = db.parseProviderModels(provider.models);
   const firstDetected = providerModels[0]?.id ?? '';
   const model =
-    session.model || project.model || firstDetected || process.env.OPENAI_MODEL || 'gpt-4o-mini';
+    session.model ||
+    project.model ||
+    provider.default_model ||
+    firstDetected ||
+    process.env.OPENAI_MODEL ||
+    'gpt-4o-mini';
+  // Effort resolution: session ('' = auto) -> provider's chosen default.
+  const effort = session.reasoning_effort || provider.default_reasoning_effort;
   // The model's context window from provider config (unknown -> compaction's env/default).
   const contextWindow = providerModels.find((m) => m.id === model)?.contextWindow;
 
@@ -518,7 +545,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           messages,
           provider: providerCreds,
           model: model || DEFAULT_MODEL(),
-          reasoningEffort: session.reasoning_effort,
+          reasoningEffort: effort,
           signal: stop.signal,
         });
         let last = 0;
@@ -555,7 +582,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
         });
       }
     }
-    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow, reasoningEffort: session.reasoning_effort, skills, signal: stop.signal })) {
+    for await (const ev of runAgentTurn({ messages, workspace, model, provider: providerCreds, contextWindow, reasoningEffort: effort, skills, signal: stop.signal })) {
       send(ev);
       switch (ev.type) {
         case 'message.complete':

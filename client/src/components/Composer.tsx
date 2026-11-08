@@ -40,10 +40,15 @@ export function Composer({
   onSend,
   onStop,
   skills,
+  defaultModel = '',
+  defaultEffort = '',
 }: {
   model: string; // '' = auto (provider's default model)
   modelGroups: ModelGroup[];
   effort: string; // '' = auto (provider's default reasoning effort)
+  /** Provider-level defaults, shown next to the "auto" options. */
+  defaultModel?: string;
+  defaultEffort?: string;
   input: string;
   busy: boolean;
   disabled: boolean;
@@ -227,7 +232,9 @@ export function Composer({
                       value=""
                       className="group flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-left text-xs outline-none transition-colors group-data-[highlighted]:bg-slate-800 group-data-[selected]:text-sky-400 text-slate-300"
                     >
-                      <span className="text-slate-400">auto — provider's default</span>
+                      <span className="text-slate-400">
+                        auto — {defaultModel || "provider's default"}
+                      </span>
                       <span className="hidden group-data-[selected]:inline">✓</span>
                     </Select.Item>
                     {modelGroups.map((g) => (
@@ -299,7 +306,9 @@ export function Composer({
                           className="group flex cursor-pointer items-baseline justify-between gap-2 px-3 py-1.5 text-left text-xs outline-none transition-colors group-data-[highlighted]:bg-slate-800 group-data-[selected]:text-violet-300 text-slate-300"
                         >
                           <span>{o.label}</span>
-                          <span className="text-[10px] text-slate-600">{o.hint}</span>
+                          <span className="text-[10px] text-slate-600">
+                            {o.value === '' ? defaultEffort || o.hint : o.hint}
+                          </span>
                         </Select.Item>
                       ))}
                     </Select.List>

@@ -50,6 +50,7 @@ export default function App() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const activeProject = projects.projects.find((p) => p.id === projectId) ?? null;
+  const composerProvider = providers.composerProvider(activeProject?.provider_id);
   const activeSession = sessions.sessions.find((s) => s.id === sessionId) ?? null;
 
   const chat = useChatTurn({
@@ -266,7 +267,9 @@ export default function App() {
         )}
         <Composer
           model={chat.modelValue}
-          modelGroups={providers.composerProvider(activeProject?.provider_id)?.model_groups ?? []}
+          modelGroups={composerProvider?.model_groups ?? []}
+          defaultModel={composerProvider?.default_model ?? ''}
+          defaultEffort={composerProvider?.default_reasoning_effort ?? ''}
           input={chat.input}
           busy={chat.busy}
           disabled={!activeProject}
