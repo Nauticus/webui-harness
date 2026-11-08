@@ -21,6 +21,7 @@ import goUrl from '@vscode/tree-sitter-wasm/wasm/tree-sitter-go.wasm?url';
 import javaUrl from '@vscode/tree-sitter-wasm/wasm/tree-sitter-java.wasm?url';
 import jsUrl from '@vscode/tree-sitter-wasm/wasm/tree-sitter-javascript.wasm?url';
 import phpUrl from '@vscode/tree-sitter-wasm/wasm/tree-sitter-php.wasm?url';
+import powershellUrl from '@vscode/tree-sitter-wasm/wasm/tree-sitter-powershell.wasm?url';
 import pyUrl from '@vscode/tree-sitter-wasm/wasm/tree-sitter-python.wasm?url';
 import rubyUrl from '@vscode/tree-sitter-wasm/wasm/tree-sitter-ruby.wasm?url';
 import rustUrl from '@vscode/tree-sitter-wasm/wasm/tree-sitter-rust.wasm?url';
@@ -52,6 +53,8 @@ const GRAMMARS: Record<string, string> = {
   jsx: jsUrl,
   javascript: jsUrl,
   php: phpUrl,
+  powershell: powershellUrl,
+  ps1: powershellUrl,
   py: pyUrl,
   python: pyUrl,
   rb: rubyUrl,

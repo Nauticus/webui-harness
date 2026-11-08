@@ -1,6 +1,12 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { classify, segmentsFromTree, segmentsText, type SyntaxNode } from '../src/lib/highlight-core';
+import {
+  classify,
+  languageFromPath,
+  segmentsFromTree,
+  segmentsText,
+  type SyntaxNode,
+} from '../src/lib/highlight-core';
 
 /** A tree-sitter node, as far as the colouring rules care. Anonymous tokens
  *  carry their literal text as their type, which is what the rules key on. */
@@ -90,4 +96,19 @@ test('adjacent runs of the same kind merge', () => {
   const b = leaf('string_content', 'b', 1);
   const segments = segmentsFromTree(node([a, b]), 'ab');
   assert.deepEqual(segments, [{ text: 'ab', cls: 'string' }]);
+});
+
+test('a file path picks its grammar by extension', () => {
+  assert.equal(languageFromPath('src/lib/items.ts'), 'ts');
+  assert.equal(languageFromPath('/a/b/App.tsx'), 'tsx');
+  assert.equal(languageFromPath('scripts/deploy.sh'), 'bash');
+  assert.equal(languageFromPath('main.py'), 'python');
+  assert.equal(languageFromPath('style.css'), 'css');
+  assert.equal(languageFromPath('nested/dir/main.rs'), 'rust');
+});
+
+test('unknown or absent extensions mean plain text', () => {
+  for (const p of ['README.md', 'package.json', 'data.yaml', 'Makefile', '.bashrc', '', '.', 'src']) {
+    assert.equal(languageFromPath(p), undefined, p);
+  }
 });

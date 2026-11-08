@@ -117,3 +117,39 @@ export function segmentsFromTree(root: SyntaxNode, source: string): Segment[] {
 export function segmentsText(segments: Segment[]): string {
   return segments.map((s) => s.text).join('');
 }
+
+/**
+ * Which grammar a file path implies, by extension. Returns the same names a
+ * markdown fence would use, so both paths reach one table. Unknown extensions
+ * mean plain text — a file is never shown wrong because of a guess.
+ */
+const BY_EXTENSION: Record<string, string> = {
+  bash: 'bash',
+  cjs: 'js',
+  css: 'css',
+  cts: 'ts',
+  go: 'go',
+  hpp: 'cpp',
+  ini: 'ini',
+  java: 'java',
+  js: 'js',
+  jsx: 'jsx',
+  mjs: 'js',
+  php: 'php',
+  ps1: 'powershell',
+  py: 'python',
+  pyi: 'python',
+  rb: 'ruby',
+  rs: 'rust',
+  sh: 'bash',
+  zsh: 'bash',
+  ts: 'ts',
+  tsx: 'tsx',
+};
+
+export function languageFromPath(path: string): string | undefined {
+  const base = path.split(/[\\/]/).pop() ?? '';
+  // Dotfiles like `.bashrc` and `.zshrc` have no extension worth trusting.
+  const ext = base.includes('.') ? (base.split('.').pop() ?? '').toLowerCase() : '';
+  return BY_EXTENSION[ext];
+}

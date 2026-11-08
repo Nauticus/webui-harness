@@ -1,5 +1,6 @@
 import { toolFailed, toolTarget } from '../lib/items';
 import { onToggle, usePanelOpen } from '../lib/panelState';
+import { HighlightedFile } from './Highlighted';
 import { DiffView } from './DiffView';
 
 function StatusChip({ isError }: { isError: boolean }) {
@@ -45,6 +46,14 @@ export function ToolCard({
   // Open while the result is arriving, but never overrule a manual collapse.
   const [open, setOpen] = usePanelOpen(stateKey, result !== undefined);
   const target = toolTarget(name, args);
+  // A read_file result IS source code, so it is coloured by that file's
+  // grammar. The "[lines 4-103 of 512] " prefix is the tool's own annotation,
+  // not part of the file: it is rendered plain so the parser sees only source.
+  const annotation = name === 'read_file' && result && !isError ? /^\[lines [\d-]+ of \d+\] /.exec(result)?.[0] : undefined;
+  const body = annotation ? result!.slice(annotation.length) : result;
+  // Only read_file returns file *contents*; other tools return status lines,
+  // which must not be coloured as if they were source.
+  const sourcePath = name === 'read_file' && !isError ? target : '';
   const argsBlock =
     args !== undefined ? (
       <details className="border-t border-dashed border-slate-700">
@@ -121,7 +130,8 @@ export function ToolCard({
         <div className="border-t border-slate-700">
           {result && (
             <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-slate-300">
-              {result}
+              {annotation && <span className="text-slate-600">{annotation}</span>}
+              <HighlightedFile text={body ?? ''} path={sourcePath} />
             </pre>
           )}
           {argsBlock}

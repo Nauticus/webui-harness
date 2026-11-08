@@ -97,6 +97,12 @@ Grammars do not share a semantic vocabulary, so the mapping in
 token whose text is word-shaped is a keyword, because the word-shaped anonymous
 tokens in a grammar are exactly the keywords. No keyword list per language.
 
+`read_file` results go through the same path, keyed by the *file's* extension
+rather than a fence — a `.ts` file the agent reads reads like the file. The
+tool's `[lines 4-103 of 512] ` annotation is stripped before parsing (it is not
+source) and rendered plain, so the parser never sees it. The 12 KB cap and the
+uncoloured fallback apply there too.
+
 The rules are pure (a tree is read through a small structural type), so they are
 unit-tested without loading any wasm. Unknown languages, missing grammars and
 any wasm failure render the source uncoloured — never wrong.

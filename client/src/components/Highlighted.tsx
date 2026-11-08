@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useState } from 'react';
 import { cachedHighlight, highlight, type Segment } from '../lib/highlight';
-import { TOKEN_CLASS } from '../lib/highlight-core';
+import { languageFromPath, TOKEN_CLASS } from '../lib/highlight-core';
 
 /**
  * A code block, coloured by tree-sitter once its grammar is loaded.
@@ -43,4 +43,15 @@ export function Highlighted({ code, language }: { code: string; language?: strin
       )}
     </>
   );
+}
+
+/**
+ * File contents, coloured by the grammar its extension implies. Used where a
+ * tool result *is* source code — a `read_file` of a `.ts` file should read like
+ * the file, not like a log line. Unknown extensions render as-is.
+ */
+export function HighlightedFile({ text, path }: { text: string; path: string }) {
+  const language = languageFromPath(path);
+  if (!language) return <>{text}</>;
+  return <Highlighted code={text} language={language} />;
 }
