@@ -210,6 +210,20 @@ export default function App() {
   );
   const onSend = useCallback(() => void chat.send(), [chat.send]);
   const onStop = useCallback(() => chat.abort(), [chat.abort]);
+  /**
+   * Manual compaction. Confirmed first because it costs a model call; it is
+   * not destructive — the older messages stay on disk, a summary record just
+   * becomes the boundary the model reads from.
+   */
+  const onCompact = useCallback(async () => {
+    if (
+      !window.confirm(
+        'Summarize this session’s older messages now? The most recent stretch stays word for word; everything before it is replaced by a summary the model reads instead.'
+      )
+    )
+      return;
+    await chat.compactNow();
+  }, [chat.compactNow]);
   const onModelChange = useCallback((v: string) => void chat.setModel(v), [chat.setModel]);
   const onEffortChange = useCallback((v: string) => void chat.setEffort(v), [chat.setEffort]);
 
@@ -318,6 +332,8 @@ export default function App() {
           onKeyDown={chat.onKeyDown}
           onSend={onSend}
           onStop={onStop}
+          onCompact={sessionId ? onCompact : undefined}
+          context={chat.context}
           skills={skills}
         />
       </main>

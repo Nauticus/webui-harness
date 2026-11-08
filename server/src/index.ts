@@ -13,6 +13,8 @@ import {
   compactMessages,
   estimateTokens,
   estimateContextTokens,
+  findCutPoint,
+  KEEP_RECENT_TOKENS,
   latestCompactionSeq,
   summaryAsMessage,
   toLlmMessages,
@@ -379,23 +381,12 @@ app.get('/api/sessions/:id', async (req, reply) => {
   let context: { tokens: number; window: number; threshold: number } | null = null;
   if (messages.length > 0) {
     const project = db.getProject(session.project_id);
-    if (project) {
-      const providers = db.listProviders();
-      const provider =
-        (project.provider_id ? providers.find((p) => p.id === project.provider_id) : undefined) ??
-        providers.find((p) => p.is_default === 1);
-      const providerModels = provider ? db.parseProviderModels(provider.models) : [];
-      const model =
-        session.model ||
-        project.model ||
-        provider?.default_model ||
-        providerModels[0]?.id ||
-        process.env.OPENAI_MODEL ||
-        'gpt-4o-mini';
+    const settings = project ? resolveTurnSettings(session, project) : null;
+    if (settings && project) {
       context = contextUsage(
         toLlmMessages(messages),
         project.cwd || DEFAULT_WORKSPACE,
-        providerModels.find((m) => m.id === model)?.contextWindow,
+        settings.contextWindow,
         listSkills(project.cwd || DEFAULT_WORKSPACE),
         latestCompactionSeq(messages)
       );
@@ -432,6 +423,37 @@ app.get('/api/sessions/:id', async (req, reply) => {
  * (works with a direct connection) and this explicit map (works when a
  * dev proxy between client and server swallows the client disconnect).
  */
+/**
+ * Provider, model and effort for a session. Resolved in one place so a normal
+ * turn, a manual compaction and the context readout cannot disagree about which
+ * model would be talking: session -> project -> provider's chosen default ->
+ * first detected model -> env fallback; effort: session ('' = auto) -> provider
+ * default. `null` when no provider is configured at all.
+ */
+function resolveTurnSettings(session: db.SessionRow, project: db.ProjectRow) {
+  const providers = db.listProviders();
+  const provider =
+    (project.provider_id ? providers.find((p) => p.id === project.provider_id) : undefined) ??
+    providers.find((p) => p.is_default === 1);
+  if (!provider) return null;
+  const providerModels = db.parseProviderModels(provider.models);
+  const model =
+    session.model ||
+    project.model ||
+    provider.default_model ||
+    providerModels[0]?.id ||
+    process.env.OPENAI_MODEL ||
+    'gpt-4o-mini';
+  return {
+    provider,
+    providerCreds: { baseUrl: provider.base_url, apiKey: provider.api_key },
+    model,
+    effort: session.reasoning_effort || provider.default_reasoning_effort,
+    // From provider config; unknown -> compaction's env/default.
+    contextWindow: providerModels.find((m) => m.id === model)?.contextWindow,
+  };
+}
+
 const activeTurns = new Map<string, AbortController>();
 
 /** Explicit stop for the session's active turn (independent of connection state). */
@@ -441,6 +463,117 @@ app.post('/api/sessions/:id/stop', async (req, reply) => {
   if (!stop) return reply.send({ stopped: false });
   stop.abort();
   return reply.send({ stopped: true });
+});
+
+/**
+ * Compact a session's context now instead of waiting for the next turn to trip
+ * the threshold. Streams exactly the events a pre-turn compaction streams, so
+ * the transcript shows the same card with the same progress, then the updated
+ * context readout. Nothing else happens: no model turn, no new message.
+ *
+ * The summarizer is a real model call, so it is interruptible through the same
+ * /stop endpoint as a turn.
+ */
+app.post('/api/sessions/:id/compact', async (req, reply) => {
+  const { id } = req.params as { id: string };
+  const session = db.getSession(id);
+  if (!session) return reply.code(404).send({ error: 'session not found' });
+  const project = db.getProject(session.project_id);
+  if (!project) return reply.code(404).send({ error: 'project not found' });
+  // A turn owns the context while it runs — compacting underneath one would
+  // rewrite the history it is reading.
+  if (activeTurns.has(id)) {
+    return reply.code(409).send({ error: 'a turn is running in this session' });
+  }
+  const settings = resolveTurnSettings(session, project);
+  if (!settings) {
+    return reply
+      .code(400)
+      .send({ error: 'no providers configured — add one with POST /api/providers' });
+  }
+  const { providerCreds, model, effort, contextWindow } = settings;
+  const workspace = project.cwd || DEFAULT_WORKSPACE;
+  const skills = listSkills(workspace);
+
+  const historyRows = await history.readHistory(id, session.project_id);
+  const messages = toLlmMessages(historyRows);
+  const staleBefore = latestCompactionSeq(historyRows);
+  // Say so before opening the stream rather than after a summarizer call: with
+  // nothing older than the ~KEEP_RECENT_TOKENS window there is no half to
+  // summarize, and compactMessages would throw for exactly that reason.
+  if (findCutPoint(messages).cut <= 0) {
+    return reply.code(400).send({
+      error: `nothing to compact yet — compaction keeps the most recent ~${Math.round(
+        KEEP_RECENT_TOKENS / 1000
+      )}k tokens verbatim`,
+    });
+  }
+  const tokensBefore = estimateContextTokens(messages, staleBefore);
+
+  reply.raw.writeHead(200, {
+    'Content-Type': 'text/event-stream',
+    'Cache-Control': 'no-cache',
+    Connection: 'keep-alive',
+  });
+  reply.hijack();
+  const stop = new AbortController();
+  reply.raw.on('close', () => stop.abort());
+  activeTurns.set(id, stop);
+  const send = (data: unknown) => {
+    if (reply.raw.destroyed) return;
+    reply.raw.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
+  try {
+    send({ type: 'compaction.start', tokensBefore });
+    const it = compactMessages({
+      messages,
+      provider: providerCreds,
+      model,
+      reasoningEffort: effort,
+      signal: stop.signal,
+    });
+    let last = 0;
+    let step = await it.next();
+    while (!step.done) {
+      const now = Date.now();
+      if (now - last >= 250) {
+        send({ type: 'compaction.progress', tokensOut: Math.ceil(step.value.length / 4) });
+        last = now;
+      }
+      step = await it.next();
+    }
+    const c = step.value;
+    const kept = [
+      { ...summaryAsMessage(c.summary), fileLists: c.fileLists },
+      ...messages.slice(c.firstKeptIndex),
+    ];
+    const tokensAfter = estimateContextTokens(kept, Number.MAX_SAFE_INTEGER);
+    await history.appendRecord(id, session.project_id, {
+      role: 'compaction',
+      content: c.summary,
+      meta: {
+        firstKeptSeq: c.firstKeptSeq,
+        tokensBefore: c.tokensBefore,
+        tokensAfter,
+        fileLists: c.fileLists,
+      },
+    });
+    send({
+      type: 'compaction',
+      summary: c.summary,
+      firstKeptSeq: c.firstKeptSeq,
+      tokensBefore: c.tokensBefore,
+      tokensAfter,
+      fileLists: c.fileLists,
+    });
+    send({ type: 'context', ...contextUsage(kept, workspace, contextWindow, skills, Number.MAX_SAFE_INTEGER) });
+  } catch (err) {
+    send({ type: 'error', message: String(err instanceof Error ? err.message : err) });
+  } finally {
+    activeTurns.delete(id);
+    reply.raw.end();
+  }
 });
 app.post('/api/sessions/:id/messages', async (req, reply) => {
   const { id } = req.params as { id: string };
@@ -473,32 +606,13 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
       ? content.replace(/^\/skill:[a-z0-9-]+[ \t]*/, '').slice(0, 48)
       : content.slice(0, 48);
 
-  const providers = db.listProviders();
-  const provider =
-    (project.provider_id ? providers.find((p) => p.id === project.provider_id) : undefined) ??
-    providers.find((p) => p.is_default === 1);
-  if (!provider) {
+  const settings = resolveTurnSettings(session, project);
+  if (!settings) {
     return reply
       .code(400)
       .send({ error: 'no providers configured — add one with POST /api/providers' });
   }
-  const providerCreds = { baseUrl: provider.base_url, apiKey: provider.api_key };
-
-  // Model resolution: session -> project -> provider's chosen default ->
-  // provider's first detected model -> env fallback.
-  const providerModels = db.parseProviderModels(provider.models);
-  const firstDetected = providerModels[0]?.id ?? '';
-  const model =
-    session.model ||
-    project.model ||
-    provider.default_model ||
-    firstDetected ||
-    process.env.OPENAI_MODEL ||
-    'gpt-4o-mini';
-  // Effort resolution: session ('' = auto) -> provider's chosen default.
-  const effort = session.reasoning_effort || provider.default_reasoning_effort;
-  // The model's context window from provider config (unknown -> compaction's env/default).
-  const contextWindow = providerModels.find((m) => m.id === model)?.contextWindow;
+  const { providerCreds, model, effort, contextWindow } = settings;
 
   await history.appendRecord(id, session.project_id, { role: 'user', content: body.content.trim() });
   if (session.title === 'New session') {

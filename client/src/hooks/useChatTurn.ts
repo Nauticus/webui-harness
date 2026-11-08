@@ -156,6 +156,7 @@ export function useChatTurn(opts: {
     runningSessionId: turn.runningSessionId,
     send: turn.send,
     abort: turn.abort,
+    compactNow: turn.compactNow,
     context,
     modelValue: model.value,
     setModel: model.set,

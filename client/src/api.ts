@@ -208,6 +208,25 @@ export async function streamTurn(
     body: JSON.stringify({ content }),
     signal,
   });
+  await readSse(res, onEvent);
+}
+
+/**
+ * Summarize the session's older messages now, rather than waiting for the next
+ * turn to trip the compaction threshold. Streams compaction events, then a
+ * refreshed `context`.
+ */
+export async function streamCompact(
+  sessionId: string,
+  onEvent: (ev: ServerEvent) => void,
+  signal?: AbortSignal
+): Promise<void> {
+  const res = await fetch(`/api/sessions/${sessionId}/compact`, { method: 'POST', signal });
+  await readSse(res, onEvent);
+}
+
+/** Consume an SSE response, dispatching each `data:` block as an event. */
+async function readSse(res: Response, onEvent: (ev: ServerEvent) => void): Promise<void> {
   if (!res.ok || !res.body) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
     throw new Error(body.error ?? `HTTP ${res.status}`);

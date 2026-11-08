@@ -136,6 +136,7 @@ auth, so keep the port local.
 - `GET /api/sessions/:id` — session (incl. `model`) + full message history
 - `GET /api/dirs?path=/abs/path` — directory browser data `{ path, parent, dirs[] }`
 - `POST /api/sessions/:id/messages` — `{ content }`, responds with an SSE stream (uses the session's model, else the project's provider + cwd)
+- `POST /api/sessions/:id/compact` — summarize the older messages now, without waiting for a turn to trip the compaction threshold. Responds with an SSE stream (`compaction.start` / `compaction.progress` / `compaction` / `context`) and persists the same compaction record an automatic one would. `409` while a turn is running in the session, `400` when there is nothing older than the keep-recent window to summarize — refused before any model call. Interruptible through `/stop`.
 
 ## Project layout
 

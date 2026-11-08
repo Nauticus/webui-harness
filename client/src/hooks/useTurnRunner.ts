@@ -1,5 +1,5 @@
 import { useCallback, useRef, useState } from 'react';
-import { api, streamTurn } from '../api';
+import { api, streamTurn, streamCompact } from '../api';
 import type { Item } from '../lib/items';
 import { applyEvent, settleCompaction, withStopped, initialTurnState, type TurnState } from '../lib/chatEvents';
 
@@ -154,6 +154,57 @@ export function useTurnRunner(opts: {
     }
   }, [mirror, mirrorSoon, cancelMirror]);
 
+  /**
+   * Compact this session's context now. Same lifecycle as a turn — busy, live
+   * buffer, one mirror per frame — minus the user message: the only events are
+   * the compaction card's and the refreshed context readout. Refuses while any
+   * turn is running, because a turn owns the history being rewritten.
+   */
+  const compactNow = useCallback(async () => {
+    const o = optsRef.current;
+    const sessionId = o.activeSessionId;
+    const projectId = o.activeProjectId;
+    if (!sessionId || !projectId || busyRef.current) return;
+
+    busyRef.current = true;
+    setBusy(true);
+    setRunningSessionId(sessionId);
+    const controller = new AbortController();
+    controllerRef.current = controller;
+    streamedSessionIdRef.current = sessionId;
+    // Keep the last known context readout: it would otherwise blink out until
+    // the compaction reports the new one.
+    turnRef.current = { ...turnRef.current, items: o.seedItems(sessionId), streamed: false };
+    mirror(sessionId);
+
+    try {
+      await streamCompact(sessionId, (ev) => {
+        turnRef.current = applyEvent(turnRef.current, ev);
+        mirrorSoon(sessionId);
+      });
+      await o.refreshSessions(projectId);
+    } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
+      turnRef.current = {
+        ...turnRef.current,
+        items: [
+          ...turnRef.current.items,
+          { kind: 'error', message: String(err instanceof Error ? err.message : err) },
+        ],
+      };
+      mirror(sessionId);
+    } finally {
+      cancelMirror();
+      turnRef.current = settleCompaction(turnRef.current);
+      mirror(sessionId);
+      controllerRef.current = null;
+      streamedSessionIdRef.current = null;
+      setRunningSessionId(null);
+      busyRef.current = false;
+      setBusy(false);
+    }
+  }, [mirror, mirrorSoon, cancelMirror]);
+
   /** Stop the running turn: aborts the local stream AND explicitly stops the
    *  server-side agent (the explicit call is what works when a dev proxy
    *  swallows the client disconnect). */
@@ -171,5 +222,5 @@ export function useTurnRunner(opts: {
     setBusy(false);
   }, [mirror, cancelMirror]);
 
-  return { busy, runningSessionId, turnRef, streamedSessionIdRef, send, abort };
+  return { busy, runningSessionId, turnRef, streamedSessionIdRef, send, abort, compactNow };
 }

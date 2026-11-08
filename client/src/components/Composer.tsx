@@ -1,7 +1,7 @@
 import { memo, useEffect, useRef, useState, type KeyboardEvent } from 'react';
 import { Select } from '@base-ui-components/react/select';
-import type { ModelGroup, Skill } from '../api';
-import { fmtTokens } from '../lib/context';
+import type { ContextUsage, ModelGroup, Skill } from '../api';
+import { contextUsage, fmtTokens } from '../lib/context';
 
 /**
  * Composer: full-width prompt input with a compact model-picker chip and a
@@ -35,6 +35,8 @@ export const Composer = memo(function Composer({
   onKeyDown,
   onSend,
   onStop,
+  onCompact,
+  context,
   skills,
   defaultModel = '',
   defaultEffort = '',
@@ -55,6 +57,10 @@ export const Composer = memo(function Composer({
   onKeyDown: (e: KeyboardEvent<HTMLTextAreaElement>) => void;
   onSend: () => void;
   onStop: () => void;
+  /** Summarize the older messages now. Absent when there is no session to compact. */
+  onCompact?: () => void;
+  /** Last known context usage, so the compact button can say what it would do. */
+  context?: ContextUsage | null;
   skills?: Skill[];
 }) {
   const [acIndex, setAcIndex] = useState(0);
@@ -130,6 +136,8 @@ export const Composer = memo(function Composer({
   };
 
   const pickerDisabled = busy || disabled;
+  /** One source of truth for "how full is the context", shared with the bar and chip. */
+  const ctx = context ? contextUsage(context) : null;
   // The group the current model belongs to (canonical id or one of its aliases).
   const currentGroup = modelGroups.find((g) => g.id === model || g.aliases.includes(model));
 
@@ -336,6 +344,30 @@ export const Composer = memo(function Composer({
                 </Select.Positioner>
               </Select.Portal>
             </Select.Root>
+            {onCompact && (
+              <button
+                type="button"
+                onClick={onCompact}
+                disabled={busy || disabled}
+                title={
+                  (ctx?.visible
+                    ? `Context ${ctx.pct.toFixed(0)}% full (${ctx.label}). ` +
+                      (ctx.armed
+                        ? 'Past the compaction threshold, so the next turn would compact by itself.'
+                        : 'Under the compaction threshold, so no turn would trigger it yet.') +
+                      ' '
+                    : '') +
+                  'Summarize the older messages now; the most recent stretch stays word for word.'
+                }
+                className={`flex items-center gap-1 rounded-full border bg-slate-900 px-2.5 py-1 text-[11px] transition-colors disabled:opacity-50 ${
+                  ctx?.armed
+                    ? 'border-amber-500/40 text-amber-300 hover:border-amber-500/70'
+                    : 'border-slate-700/80 text-slate-400 hover:border-sky-500/50 hover:text-slate-200'
+                }`}
+              >
+                <span aria-hidden>⧉</span> compact
+              </button>
+            )}
           </div>
           <div className="flex items-center gap-3">
             <p className="text-[11px] text-slate-600">
