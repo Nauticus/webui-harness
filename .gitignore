@@ -9,3 +9,7 @@ data/
 # pi agent local state
 .pi/
 .playwright-cli/
+
+# playwright-cli runtime artifacts (keep the shared config)
+.playwright/*
+!.playwright/cli.config.json

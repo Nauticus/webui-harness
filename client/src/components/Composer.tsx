@@ -1,4 +1,5 @@
-import { useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { useEffect, useState, type KeyboardEvent } from 'react';
+import { Select } from '@base-ui-components/react/select';
 import type { ModelGroup, Skill } from '../api';
 
 /** 128000 -> '128k', 1000000 -> '1M'. */
@@ -55,10 +56,6 @@ export function Composer({
   onStop: () => void;
   skills?: Skill[];
 }) {
-  const [open, setOpen] = useState(false);
-  const pickerRef = useRef<HTMLDivElement>(null);
-  const [effortOpen, setEffortOpen] = useState(false);
-  const effortRef = useRef<HTMLDivElement>(null);
   const [acIndex, setAcIndex] = useState(0);
 
   // /skill: autocomplete — a single leading "/token" (no spaces yet).
@@ -110,36 +107,9 @@ export function Composer({
     onKeyDown(e);
   };
 
-  // Close the popovers on outside click or Escape.
-  useEffect(() => {
-    if (!open && !effortOpen) return;
-    const onPointerDown = (e: globalThis.PointerEvent) => {
-      if (open && pickerRef.current && !pickerRef.current.contains(e.target as Node)) setOpen(false);
-      if (effortOpen && effortRef.current && !effortRef.current.contains(e.target as Node))
-        setEffortOpen(false);
-    };
-    const onKeyDownDoc = (e: globalThis.KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        setOpen(false);
-        setEffortOpen(false);
-      }
-    };
-    document.addEventListener('pointerdown', onPointerDown);
-    document.addEventListener('keydown', onKeyDownDoc);
-    return () => {
-      document.removeEventListener('pointerdown', onPointerDown);
-      document.removeEventListener('keydown', onKeyDownDoc);
-    };
-  }, [open, effortOpen]);
-
   const pickerDisabled = busy || disabled;
   // The group the current model belongs to (canonical id or one of its aliases).
   const currentGroup = modelGroups.find((g) => g.id === model || g.aliases.includes(model));
-  // The options list is exactly: auto first, then the provider's base models.
-  const options: (string | { group: ModelGroup })[] = [
-    '',
-    ...modelGroups.map((g) => ({ group: g })),
-  ];
 
   return (
     <footer className="border-t border-slate-800 px-5 py-4">
@@ -208,14 +178,27 @@ export function Composer({
 
         <div className="mt-1.5 flex items-center justify-between gap-3">
           <div className="flex items-center gap-1.5">
-          <div ref={pickerRef} className="relative">
-            <button
-              onClick={() => setOpen((v) => !v)}
-              disabled={pickerDisabled}
+          <Select.Root
+            value={model}
+            onValueChange={(v) => v !== null && onModelChange(v)}
+            disabled={pickerDisabled}
+            // The stored model can be an alias; its group counts as selected.
+            isItemEqualToValue={(itemId, selected) => {
+              if (selected === '') return itemId === '';
+              if (itemId === selected) return true;
+              const g = modelGroups.find((x) => x.id === itemId);
+              return g ? g.aliases.includes(selected) : false;
+            }}
+          >
+            <Select.Trigger
               title="Model for this chat"
-              aria-haspopup="listbox"
-              aria-expanded={open}
-              className="flex items-center gap-1.5 rounded-full border border-slate-700/80 bg-slate-900 px-2.5 py-1 text-[11px] text-slate-400 transition-colors hover:border-sky-500/50 hover:text-slate-200 disabled:opacity-50"
+              className={(state) =>
+                `group flex items-center gap-1.5 rounded-full border bg-slate-900 px-2.5 py-1 text-[11px] transition-colors disabled:opacity-50 ${
+                  state.open
+                    ? 'border-sky-500/50 text-slate-200'
+                    : 'border-slate-700/80 text-slate-400 hover:border-sky-500/50 hover:text-slate-200'
+                }`
+              }
             >
               <span className="max-w-[14rem] truncate">{model || 'auto'}</span>
               {model && currentGroup?.contextWindow !== undefined && (
@@ -228,106 +211,102 @@ export function Composer({
               )}
               <svg
                 viewBox="0 0 12 12"
-                className={`h-3 w-3 transition-transform ${open ? 'rotate-180' : ''}`}
+                className="h-3 w-3 transition-transform group-[aria-expanded=true]:rotate-180"
                 fill="none"
                 stroke="currentColor"
                 strokeWidth="1.5"
               >
                 <path d="M2.5 4.5 6 8l3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
               </svg>
-            </button>
-            {open && (
-              <div
-                role="listbox"
-                className="absolute bottom-full left-0 z-10 mb-1.5 max-h-64 w-60 overflow-auto rounded-xl border border-slate-700 bg-slate-900 py-1 shadow-xl"
-              >
-                {options.map((o) => {
-                  const group = typeof o === 'string' ? undefined : o.group;
-                  const id = group ? group.id : '';
-                  const selected = group ? group.id === model || group.aliases.includes(model) : model === '';
-                  return (
-                    <button
-                      key={id || 'auto'}
-                      role="option"
-                      aria-selected={selected}
-                      onClick={() => {
-                        onModelChange(id); // selecting a group sends its canonical id
-                        setOpen(false);
-                      }}
-                      className={`flex w-full items-center justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-slate-800 ${
-                        selected ? 'text-sky-400' : 'text-slate-300'
-                      }`}
-                      title={group && group.aliases.length > 0 ? `Aliases: ${group.aliases.join(', ')}` : undefined}
+            </Select.Trigger>
+            <Select.Portal>
+              <Select.Positioner side="top" align="start" sideOffset={6} className="z-20">
+                <Select.Popup className="rounded-xl border border-slate-700 bg-slate-900 py-1 shadow-xl">
+                  <Select.List className="max-h-64 w-60 overflow-auto py-1">
+                    <Select.Item
+                      value=""
+                      className="group flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-left text-xs outline-none transition-colors group-data-[highlighted]:bg-slate-800 group-data-[selected]:text-sky-400 text-slate-300"
                     >
-                      <span className="flex min-w-0 items-center gap-1.5">
-                        <span className="truncate">
-                          {id || <span className="text-slate-400">auto — provider's default</span>}
+                      <span className="text-slate-400">auto — provider's default</span>
+                      <span className="hidden group-data-[selected]:inline">✓</span>
+                    </Select.Item>
+                    {modelGroups.map((g) => (
+                      <Select.Item
+                        key={g.id}
+                        value={g.id}
+                        title={g.aliases.length > 0 ? `Aliases: ${g.aliases.join(', ')}` : undefined}
+                        className="group flex cursor-pointer items-center justify-between gap-2 px-3 py-1.5 text-left text-xs outline-none transition-colors group-data-[highlighted]:bg-slate-800 group-data-[selected]:text-sky-400 text-slate-300"
+                      >
+                        <span className="flex min-w-0 items-center gap-1.5">
+                          <span className="truncate">{g.id}</span>
+                          {g.aliases.length > 0 && (
+                            <span
+                              className="shrink-0 rounded-full border border-slate-700 px-1 text-[10px] text-slate-500"
+                              title={`Aliases: ${g.aliases.join(', ')}`}
+                            >
+                              +{g.aliases.length}
+                            </span>
+                          )}
                         </span>
-                        {group && group.aliases.length > 0 && (
-                          <span
-                            className="shrink-0 rounded-full border border-slate-700 px-1 text-[10px] text-slate-500"
-                            title={`Aliases: ${group.aliases.join(', ')}`}
-                          >
-                            +{group.aliases.length}
-                          </span>
-                        )}
-                      </span>
-                      <span className="flex shrink-0 items-center gap-1.5">
-                        {group?.contextWindow !== undefined && (
-                          <span className="text-[10px] text-slate-500">
-                            {formatContextWindow(group.contextWindow)}
-                          </span>
-                        )}
-                        {selected && <span>✓</span>}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-            <div ref={effortRef} className="relative">
-              <button
-                onClick={() => setEffortOpen((v) => !v)}
-                disabled={pickerDisabled}
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          {g.contextWindow !== undefined && (
+                            <span className="text-[10px] text-slate-500">{formatContextWindow(g.contextWindow)}</span>
+                          )}
+                          <span className="hidden group-data-[selected]:inline">✓</span>
+                        </span>
+                      </Select.Item>
+                    ))}
+                  </Select.List>
+                </Select.Popup>
+              </Select.Positioner>
+            </Select.Portal>
+          </Select.Root>
+            <Select.Root
+              value={effort}
+              onValueChange={(v) => v !== null && onEffortChange(v)}
+              disabled={pickerDisabled}
+            >
+              <Select.Trigger
                 title="Reasoning effort for this chat (thinking-capable models)"
-                className="flex items-center gap-1 rounded-full border border-slate-700/80 bg-slate-900 px-2.5 py-1 text-[11px] text-slate-400 transition-colors hover:border-violet-500/50 hover:text-slate-200 disabled:opacity-50"
+                className={(state) =>
+                  `group flex items-center gap-1 rounded-full border bg-slate-900 px-2.5 py-1 text-[11px] transition-colors disabled:opacity-50 ${
+                    state.open
+                      ? 'border-violet-500/50 text-slate-200'
+                      : 'border-slate-700/80 text-slate-400 hover:border-violet-500/50 hover:text-slate-200'
+                  }`
+                }
               >
                 <span className="text-violet-400/80">✦</span>
                 {effort || 'auto'}
                 <svg
                   viewBox="0 0 12 12"
-                  className={`h-3 w-3 transition-transform ${effortOpen ? 'rotate-180' : ''}`}
+                  className="h-3 w-3 transition-transform group-[aria-expanded=true]:rotate-180"
                   fill="none"
                   stroke="currentColor"
                   strokeWidth="1.5"
                 >
                   <path d="M2.5 4.5 6 8l3.5-3.5" strokeLinecap="round" strokeLinejoin="round" />
                 </svg>
-              </button>
-              {effortOpen && (
-                <div className="absolute bottom-full left-0 z-10 mb-1.5 w-52 rounded-xl border border-slate-700 bg-slate-900 py-1 shadow-xl">
-                  {EFFORT_OPTIONS.map((o) => {
-                    const selected = (effort || '') === o.value;
-                    return (
-                      <button
-                        key={o.value || 'auto'}
-                        onClick={() => {
-                          onEffortChange(o.value);
-                          setEffortOpen(false);
-                        }}
-                        className={`flex w-full items-baseline justify-between gap-2 px-3 py-1.5 text-left text-xs transition-colors hover:bg-slate-800 ${
-                          selected ? 'text-violet-300' : 'text-slate-300'
-                        }`}
-                      >
-                        <span>{o.label}</span>
-                        <span className="text-[10px] text-slate-600">{o.hint}</span>
-                      </button>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
+              </Select.Trigger>
+              <Select.Portal>
+                <Select.Positioner side="top" align="start" sideOffset={6} className="z-20">
+                  <Select.Popup className="rounded-xl border border-slate-700 bg-slate-900 py-1 shadow-xl">
+                    <Select.List className="w-52 py-1">
+                      {EFFORT_OPTIONS.map((o) => (
+                        <Select.Item
+                          key={o.value || 'auto'}
+                          value={o.value}
+                          className="group flex cursor-pointer items-baseline justify-between gap-2 px-3 py-1.5 text-left text-xs outline-none transition-colors group-data-[highlighted]:bg-slate-800 group-data-[selected]:text-violet-300 text-slate-300"
+                        >
+                          <span>{o.label}</span>
+                          <span className="text-[10px] text-slate-600">{o.hint}</span>
+                        </Select.Item>
+                      ))}
+                    </Select.List>
+                  </Select.Popup>
+                </Select.Positioner>
+              </Select.Portal>
+            </Select.Root>
           </div>
           <div className="flex items-center gap-3">
             <p className="text-[11px] text-slate-600">Enter to send · Shift+Enter for newline{(skills ?? []).length > 0 ? " · / for skills" : ""}</p>
