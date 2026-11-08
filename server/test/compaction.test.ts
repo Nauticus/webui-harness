@@ -2,6 +2,8 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import {
   estimateTokens,
+  estimateContextTokens,
+  calculateContextTokens,
   findCutPoint,
   serializeSpan,
   summaryAsMessage,
@@ -156,4 +158,64 @@ test('toLlmMessages: the latest compaction record wins', () => {
   assert.ok(msgs[0]!.content?.includes('new summary'));
   assert.ok(!msgs[0]!.content?.includes('old summary'));
   assert.deepEqual(msgs.map((m) => m.seq), [undefined, 5]);
+});
+
+// ---------- usage-anchored token accounting (pi hybrid) ----------
+
+test('calculateContextTokens: native total wins, else component sum', () => {
+  assert.equal(calculateContextTokens({ input: 10, output: 5, totalTokens: 20 }), 20);
+  assert.equal(calculateContextTokens({ input: 10, output: 5 }), 15);
+  assert.equal(calculateContextTokens({ input: 10, output: 5, cacheRead: 3, cacheWrite: 2 }), 20);
+});
+
+test('estimateContextTokens: without usage it is the plain estimate', () => {
+  const messages: CompactableMessage[] = [
+    { role: 'user', content: 'hello world' },
+    { role: 'assistant', content: 'hi there' },
+  ];
+  assert.equal(estimateContextTokens(messages), estimateTokens(messages));
+});
+
+test('estimateContextTokens: usage anchor + trailing estimate', () => {
+  const messages: CompactableMessage[] = [
+    { role: 'user', content: 'x'.repeat(4000) },
+    { role: 'assistant', content: 'y'.repeat(4000), usage: { input: 1000, output: 500 } },
+    { role: 'tool', content: 'z'.repeat(4000), tool_call_id: 't1', name: 'bash' },
+  ];
+  // 1500 (usage) + chars/4 of the trailing tool message (1000 + overhead).
+  const trailing = estimateTokens([messages[2]!]);
+  assert.equal(estimateContextTokens(messages), 1500 + trailing);
+  assert.ok(estimateContextTokens(messages) < estimateTokens(messages), 'usage anchor beats the raw estimate for a large prefix');
+});
+
+test('estimateContextTokens: an all-zero usage is ignored', () => {
+  const messages: CompactableMessage[] = [
+    { role: 'user', content: 'hello' },
+    { role: 'assistant', content: 'world', usage: { input: 0, output: 0 } },
+  ];
+  assert.equal(estimateContextTokens(messages), estimateTokens(messages));
+});
+
+test('estimateContextTokens: the last valid usage wins', () => {
+  const messages: CompactableMessage[] = [
+    { role: 'assistant', content: 'a', usage: { input: 100, output: 10 } },
+    { role: 'assistant', content: 'b', usage: { input: 5000, output: 500 } },
+    { role: 'tool', content: 'c'.repeat(4000), tool_call_id: 't1', name: 'bash' },
+  ];
+  const trailing = estimateTokens([messages[2]!]);
+  assert.equal(estimateContextTokens(messages), 5500 + trailing);
+});
+
+test('toLlmMessages: persisted usage is read back onto the message', () => {
+  const rows: HistoryRecord[] = [
+    { seq: 1, role: 'user', content: 'a' },
+    { seq: 2, role: 'assistant', content: 'b', meta: { usage: { input: 123, output: 45, totalTokens: 168 } } },
+  ];
+  const msgs = toLlmMessages(rows);
+  assert.deepEqual(msgs[1]!.usage, { input: 123, output: 45, totalTokens: 168 });
+  // A malformed usage (missing output) is dropped, not trusted.
+  const bad: HistoryRecord[] = [
+    { seq: 1, role: 'assistant', content: 'b', meta: { usage: { input: 123 } } },
+  ];
+  assert.equal(toLlmMessages(bad)[0]!.usage, undefined);
 });

@@ -57,6 +57,13 @@ function sseChunks(text: string): unknown[] {
   ];
   for (const piece of text.match(/.{1,24}/gs) ?? [])
     out.push({ id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: piece } }] });
+  // Usage on the final chunk (stream_options.include_usage shape).
+  out.push({
+    id: 'm1',
+    object: 'chat.completion.chunk',
+    choices: [],
+    usage: { prompt_tokens: 1234, completion_tokens: 56, total_tokens: 1290, prompt_tokens_details: { cached_tokens: 100 } },
+  });
   out.push({ id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {} }] });
   return out;
 }
@@ -82,6 +89,12 @@ function streamToolCall(): unknown[] {
           },
         },
       ],
+    },
+    {
+      id: 'm1',
+      object: 'chat.completion.chunk',
+      choices: [],
+      usage: { prompt_tokens: 234, completion_tokens: 12, total_tokens: 246 },
     },
     { id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {} }] },
   ];
@@ -264,8 +277,13 @@ test('e2e: normal turn, pre-turn compaction, mid-turn compaction, overflow recov
     assert.equal(ctx[0]!.threshold, 3000); // window - reserve(2000)
     assert.ok(typeof complete!.tokens === 'number' && complete!.tokens > 0);
 
-    const s = await fetch(`${APP_BASE}/api/sessions/${sessionId}`).then((r) => r.json() as { messages: { role: string }[] });
+    const s = await fetch(`${APP_BASE}/api/sessions/${sessionId}`).then((r) => r.json() as { messages: { role: string; meta: string | null }[] });
     assert.deepEqual(s.messages.map((m) => m.role), ['user', 'assistant', 'tool', 'assistant']);
+    // Usage round-trip: the mock's usage chunk is captured, persisted on the
+    // tool.round record, and read back from the session.
+    const toolRound = s.messages[1]!;
+    const meta = JSON.parse(toolRound.meta!) as { usage?: { input: number; output: number } };
+    assert.deepEqual(meta.usage, { input: 234, output: 12, totalTokens: 246 });
   });
 
   await t.test('large context triggers pre-turn compaction and the summary is re-injected', async () => {

@@ -9,9 +9,11 @@ import {
   compactionThreshold,
   compactMessages,
   estimateTokens,
+  estimateContextTokens,
   summaryAsMessage,
   DEFAULT_CONTEXT_WINDOW,
   type CompactableMessage,
+  type UsageInfo,
 } from './compaction';
 
 /** One OpenAI-style tool call (serialized form, safe for DB storage). */
@@ -30,12 +32,13 @@ export interface LlmMessage {
   reasoning?: string; // assistant thinking, sent back for multi-turn continuity
   seq?: number; // history row seq when the message came from a persisted record
   fileLists?: { readFiles: string[]; modifiedFiles: string[] }; // summary message: carried file tracking
+  usage?: UsageInfo; // assistant: provider-reported usage, the token-estimate anchor
 }
 
 export type AgentEvent =
   | { type: 'message.delta'; text: string }
   | { type: 'thinking.delta'; text: string }
-  | { type: 'tool.round'; content: string; toolCalls: StoredToolCall[]; reasoning?: string }
+  | { type: 'tool.round'; content: string; toolCalls: StoredToolCall[]; reasoning?: string; usage?: UsageInfo }
   | { type: 'tool.start'; id: string; name: string; args: unknown }
   | { type: 'tool.result'; id: string; name: string; result: string; diff?: string }
   /**
@@ -57,7 +60,7 @@ export type AgentEvent =
       tokensAfter: number;
       fileLists: { readFiles: string[]; modifiedFiles: string[] };
     }
-  | { type: 'message.complete'; content: string; tokens: number; reasoning?: string }
+  | { type: 'message.complete'; content: string; tokens: number; reasoning?: string; usage?: UsageInfo }
   /**
    * Emitted when the user stops the turn while the model was still
    * streaming a text reply. `content` holds the partial text so far, so
@@ -119,7 +122,7 @@ export function contextUsage(
     ...messages,
   ];
   return {
-    tokens: estimateTokens(conversation),
+    tokens: estimateContextTokens(conversation),
     window: contextWindow ?? DEFAULT_CONTEXT_WINDOW,
     threshold: compactionThreshold(contextWindow),
   };
@@ -184,7 +187,7 @@ export async function* runAgentTurn(opts: {
     compactSucceeded = false;
     const body = conversation.slice(1);
     try {
-      yield { type: 'compaction.start', tokensBefore: estimateTokens(body) };
+      yield { type: 'compaction.start', tokensBefore: estimateContextTokens(body) };
       const it = compactMessages({ messages: body, provider: opts.provider, model, signal: opts.signal });
       let lastEmit = 0;
       let step = await it.next();
@@ -205,7 +208,7 @@ export async function* runAgentTurn(opts: {
         summary: c.summary,
         firstKeptSeq: c.firstKeptSeq,
         tokensBefore: c.tokensBefore,
-        tokensAfter: estimateTokens(conversation),
+        tokensAfter: estimateContextTokens(conversation),
         fileLists: c.fileLists,
       };
     } catch (err) {
@@ -231,14 +234,15 @@ export async function* runAgentTurn(opts: {
 
     // Mid-turn compaction: tool results are the usual context growth; check
     // after each tool round, before the next LLM call.
-    if (!atGuard && step > 0 && estimateTokens(conversation.slice(1)) > threshold) {
+    if (!atGuard && step > 0 && estimateContextTokens(conversation.slice(1)) > threshold) {
       yield* compactInPlace('mid-turn');
     }
     // Report the current context size to the UI (also right after compaction).
-    yield { type: 'context', tokens: estimateTokens(conversation), window, threshold };
+    yield { type: 'context', tokens: estimateContextTokens(conversation), window, threshold };
 
     let content = '';
     let reasoning = '';
+    let usage: UsageInfo | undefined;
     const rawCalls: { index: number; id?: string; name?: string; args: string }[] = [];
 
     // If the turn was stopped while the model was streaming, persist what
@@ -253,7 +257,7 @@ export async function* runAgentTurn(opts: {
         yield {
           type: 'message.stopped',
           content,
-          tokens: estimateTokens(conversation),
+          tokens: estimateContextTokens(conversation),
           ...(reasoning ? { reasoning } : {}),
         };
       }
@@ -267,6 +271,7 @@ export async function* runAgentTurn(opts: {
           messages: conversation as unknown as ChatCompletionMessageParam[],
           ...(atGuard ? {} : { tools: TOOLS }),
           stream: true,
+          stream_options: { include_usage: true },
           ...effortParams,
         },
         { signal: opts.signal }
@@ -288,6 +293,15 @@ export async function* runAgentTurn(opts: {
 
     try {
       for await (const chunk of stream) {
+        // Usage arrives on the final chunk (stream_options.include_usage).
+        if (chunk.usage) {
+          usage = {
+            input: chunk.usage.prompt_tokens ?? 0,
+            output: chunk.usage.completion_tokens ?? 0,
+            cacheRead: chunk.usage.prompt_tokens_details?.cached_tokens,
+            totalTokens: chunk.usage.total_tokens,
+          };
+        }
         const choice = chunk.choices[0] as
           | { delta?: unknown; message?: { reasoning?: unknown; reasoning_details?: unknown } }
           | undefined;
@@ -356,8 +370,9 @@ export async function* runAgentTurn(opts: {
         content: content || null,
         tool_calls: stored,
         ...(reasoning ? { reasoning } : {}),
+        ...(usage ? { usage } : {}),
       });
-      yield { type: 'tool.round', content, toolCalls: stored, ...(reasoning ? { reasoning } : {}) };
+      yield { type: 'tool.round', content, toolCalls: stored, ...(reasoning ? { reasoning } : {}), ...(usage ? { usage } : {}) };
 
       for (let i = 0; i < stored.length; i++) {
         // Stopped mid-batch: stub every remaining call so the persisted
@@ -413,12 +428,14 @@ export async function* runAgentTurn(opts: {
       role: 'assistant',
       content: content || null,
       ...(reasoning ? { reasoning } : {}),
+      ...(usage ? { usage } : {}),
     });
     yield {
       type: 'message.complete',
       content,
-      tokens: estimateTokens(conversation),
+      tokens: estimateContextTokens(conversation),
       ...(reasoning ? { reasoning } : {}),
+      ...(usage ? { usage } : {}),
     };
     return;
   }

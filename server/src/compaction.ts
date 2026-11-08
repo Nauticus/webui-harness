@@ -83,6 +83,54 @@ export function estimateTokens(
 }
 
 /**
+ * Provider-reported token usage for one assistant call, in the shape pi's
+ * calculateContextTokens expects. Captured from the stream's usage chunk
+ * (stream_options.include_usage) and persisted on the record's meta.
+ */
+export interface UsageInfo {
+  input: number;
+  output: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  totalTokens?: number;
+}
+
+/** Native total when available, else the sum of components (pi). */
+export function calculateContextTokens(usage: UsageInfo): number {
+  return usage.totalTokens || usage.input + usage.output + (usage.cacheRead ?? 0) + (usage.cacheWrite ?? 0);
+}
+
+/**
+ * Context size using the last assistant call's reported usage as the anchor
+ * (pi's hybrid): usage covers everything up to that call; messages after it
+ * (tool results, the next user message) are estimated with chars/4. Without
+ * a usable usage (none captured, or all-zero) the whole context is
+ * estimated. A usage only exists on completed calls, so no staleness check
+ * is needed in a linear session: every message after the anchor is either
+ * newer than it or was estimated, and compaction re-anchors on the next
+ * completed call.
+ */
+export function estimateContextTokens(messages: CompactableMessage[]): number {
+  let usageIdx = -1;
+  let usageTokens = 0;
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === 'assistant' && m.usage) {
+      const t = calculateContextTokens(m.usage);
+      if (t > 0) {
+        usageIdx = i;
+        usageTokens = t;
+        break;
+      }
+    }
+  }
+  if (usageIdx === -1) return estimateTokens(messages);
+  let trailing = 0;
+  for (let i = usageIdx + 1; i < messages.length; i++) trailing += estimateTokens([messages[i]!]);
+  return usageTokens + trailing;
+}
+
+/**
  * Index of the first message to keep verbatim: accumulate from the end until
  * KEEP_RECENT_TOKENS is reached. The kept span never starts with a tool
  * result (it must stay with its tool_calls), so back up over tool messages.
@@ -302,7 +350,19 @@ export function toLlmMessages(rows: HistoryRecord[]): CompactableMessage[] {
       tool_call_id?: unknown;
       name?: unknown;
       reasoning?: unknown;
+      usage?: { input?: unknown; output?: unknown; cacheRead?: unknown; cacheWrite?: unknown; totalTokens?: unknown };
     };
+    let usage: UsageInfo | undefined;
+    const u = meta.usage;
+    if (r.role === 'assistant' && u && typeof u.input === 'number' && typeof u.output === 'number') {
+      usage = {
+        input: u.input,
+        output: u.output,
+        ...(typeof u.cacheRead === 'number' ? { cacheRead: u.cacheRead } : {}),
+        ...(typeof u.cacheWrite === 'number' ? { cacheWrite: u.cacheWrite } : {}),
+        ...(typeof u.totalTokens === 'number' ? { totalTokens: u.totalTokens } : {}),
+      };
+    }
     out.push({
       role: r.role as LlmMessage['role'],
       content: r.content || null,
@@ -311,6 +371,7 @@ export function toLlmMessages(rows: HistoryRecord[]): CompactableMessage[] {
       ...(meta.tool_call_id !== undefined ? { tool_call_id: String(meta.tool_call_id) } : {}),
       ...(meta.name !== undefined ? { name: String(meta.name) } : {}),
       ...(r.role === 'assistant' && meta.reasoning ? { reasoning: String(meta.reasoning) } : {}),
+      ...(usage ? { usage } : {}),
     });
   }
   return out;
@@ -333,7 +394,7 @@ export async function* compactMessages(opts: {
 }): AsyncGenerator<string, CompactResult> {
   const { messages, provider, model, reasoningEffort, signal } = opts;
   const effortParams = effortExtraParams(provider.baseUrl, model, reasoningEffort ?? '');
-  const tokensBefore = estimateTokens(messages);
+  const tokensBefore = estimateContextTokens(messages);
   const cut = findCutPoint(messages);
   if (cut <= 0) throw new Error('compaction: nothing to summarize');
   const span = messages.slice(0, cut);

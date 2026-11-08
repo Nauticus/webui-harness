@@ -12,10 +12,12 @@ import {
   compactionThreshold,
   compactMessages,
   estimateTokens,
+  estimateContextTokens,
   summaryAsMessage,
   toLlmMessages,
   type CompactableMessage,
   type CompactResult,
+  type UsageInfo,
 } from './compaction';
 import { detectModels, groupModels } from './providers';
 import { isReasoningEffort, type ReasoningEffort } from './reasoning';
@@ -520,6 +522,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
 
   let finalContent = '';
   let finalReasoning = '';
+  let finalUsage: UsageInfo | undefined;
   const toolArgs = new Map<string, { name: string; args: unknown }>();
   try {
     const historyRows = await history.readHistory(id, session.project_id);
@@ -537,10 +540,10 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
     }
     // Pre-turn compaction: the context may have grown past the threshold in
     // an earlier turn. Non-fatal — on failure the full context is sent.
-    if (estimateTokens(messages) > compactionThreshold(contextWindow)) {
+    if (estimateContextTokens(messages) > compactionThreshold(contextWindow)) {
       let c: CompactResult | undefined;
       try {
-        send({ type: 'compaction.start', tokensBefore: estimateTokens(messages) });
+        send({ type: 'compaction.start', tokensBefore: estimateContextTokens(messages) });
         const it = compactMessages({
           messages,
           provider: providerCreds,
@@ -570,7 +573,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           meta: {
             firstKeptSeq: c.firstKeptSeq,
             tokensBefore: c.tokensBefore,
-            tokensAfter: estimateTokens(messages),
+            tokensAfter: estimateContextTokens(messages),
             fileLists: c.fileLists,
           },
         });
@@ -579,7 +582,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           summary: c.summary,
           firstKeptSeq: c.firstKeptSeq,
           tokensBefore: c.tokensBefore,
-          tokensAfter: estimateTokens(messages),
+          tokensAfter: estimateContextTokens(messages),
           fileLists: c.fileLists,
         });
       }
@@ -590,6 +593,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
         case 'message.complete':
           finalContent = ev.content;
           if (ev.reasoning) finalReasoning = ev.reasoning;
+          finalUsage = ev.usage;
           break;
         case 'message.stopped':
           // Partial text from a stopped turn: persist it so the session
@@ -606,7 +610,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
           await history.appendRecord(id, session.project_id, {
             role: 'assistant',
             content: ev.content,
-            meta: { tool_calls: ev.toolCalls, ...(ev.reasoning ? { reasoning: ev.reasoning } : {}) },
+            meta: { tool_calls: ev.toolCalls, ...(ev.reasoning ? { reasoning: ev.reasoning } : {}), ...(ev.usage ? { usage: ev.usage } : {}) },
           });
           break;
         case 'tool.start':
@@ -646,7 +650,14 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
       await history.appendRecord(id, session.project_id, {
         role: 'assistant',
         content: finalContent,
-        ...(finalReasoning ? { meta: { reasoning: finalReasoning } } : {}),
+        ...(finalReasoning || finalUsage
+          ? {
+              meta: {
+                ...(finalReasoning ? { reasoning: finalReasoning } : {}),
+                ...(finalUsage ? { usage: finalUsage } : {}),
+              },
+            }
+          : {}),
       });
     }
     send({ type: 'done' });
