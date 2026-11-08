@@ -6,6 +6,7 @@ import type { Skill } from '../api';
 import { type Item, isSkillFile, parseSkillInvocation, toolTarget } from '../lib/items';
 import { ThinkingCard } from './ThinkingCard';
 import { CodeBlock } from './CodeBlock';
+import { Highlighted } from './Highlighted';
 import { ToolCard } from './ToolCard';
 import { CompactionCard } from './CompactionCard';
 import { SkillCard, matchSkill } from './SkillCard';
@@ -15,7 +16,25 @@ import { SkillCard, matchSkill } from './SkillCard';
 const MD_COMPONENTS: Components = {
   a: ({ node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer noopener" />,
   pre: ({ node: _node, ...props }) => <CodeBlock {...props} />,
+  // Fenced blocks are coloured by tree-sitter; inline code and fences in
+  // languages without a grammar render exactly as react-markdown would.
+  code: ({ node: _node, className, children, ...props }) => {
+    const lang = /language-([\w+#-]+)/.exec(className ?? '')?.[1];
+    if (!lang) return <code className={className} {...props}>{children}</code>;
+    return (
+      <code className={className} {...props}>
+        <Highlighted code={textOf(children)} language={lang} />
+      </code>
+    );
+  },
 };
+
+/** react-markdown hands code children as text (possibly in pieces). */
+function textOf(children: unknown): string {
+  if (typeof children === 'string') return children;
+  if (Array.isArray(children)) return children.map(textOf).join('');
+  return '';
+}
 
 /** Memoized: a streaming turn only ever changes the last item, and every
  *  other item keeps its identity through the reducer — so per delta exactly

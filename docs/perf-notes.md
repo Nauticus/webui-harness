@@ -66,6 +66,41 @@ Realistic cadence (400 deltas, one every 4ms) before → after:
   turn running in another session can no longer put a placeholder row, or
   live-render markup, onto the session on screen.
 
+## Syntax highlighting (tree-sitter)
+
+Code blocks are coloured by real parsers, not regexes: `@vscode/tree-sitter-wasm`
+(the grammars VS Code ships, built with `tree-sitter build --wasm`, so they carry
+the `dylink.0` section that `web-tree-sitter` ≥0.25 requires — the older
+`tree-sitter-wasms` grammars are rejected by that loader). Runtime 206 KB
+(82 KB gz), grammars 5–1400 KB each (js 51 KB gz, python 69 KB gz), emitted as
+separate assets and fetched only for the language a block actually names.
+
+Measured in the browser:
+
+| block | size | cost | spans |
+| ----- | ---- | ---- | ----- |
+| 50 lines | 7 KB | 40ms first block (includes grammar load) | 1900 |
+| 200 lines | 28 KB | 18ms | 3269 (head coloured, tail plain) |
+| 800 lines | 115 KB | 15ms | 3269 — capped, so size stops mattering |
+
+Two decisions came out of those numbers rather than taste:
+
+- **Only 12 KB of a block is parsed**, cut at a line boundary, the rest stays
+  plain. Without the cap a 1600-line dump cost 102ms and produced ~26k spans.
+- **Delimiters are not coloured.** Giving `;`, `,`, `(` and `.` their own shade
+  made more than half the spans for no gain in readability; operators keep a
+  shade, everything else merges into plain runs (12 spans where it was 24).
+
+Grammars do not share a semantic vocabulary, so the mapping in
+`highlight-core.ts` keys off node-type naming conventions (`string_content`,
+`property_identifier`, `type_identifier`) plus one structural fact: an *unnamed*
+token whose text is word-shaped is a keyword, because the word-shaped anonymous
+tokens in a grammar are exactly the keywords. No keyword list per language.
+
+The rules are pure (a tree is read through a small structural type), so they are
+unit-tested without loading any wasm. Unknown languages, missing grammars and
+any wasm failure render the source uncoloured — never wrong.
+
 ## Still open
 
 - Markdown is parsed once per finalized item; a 200 KB single reply still costs
