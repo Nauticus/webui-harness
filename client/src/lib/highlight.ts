@@ -2,7 +2,7 @@
 // value is the module object, so it comes in through the default import.
 import mod from '@vscode/tree-sitter-wasm';
 import type { Language as TSLanguage, Node as TSNode, Parser as TSParser } from '@vscode/tree-sitter-wasm';
-import { segmentsFromTree, type Segment, type SyntaxNode } from './highlight-core';
+import { segmentsByLine, segmentsFromTree, type Segment, type SyntaxNode } from './highlight-core';
 
 const { Parser, Language } = mod as unknown as {
   Parser: typeof TSParser;
@@ -165,3 +165,14 @@ export async function highlight(code: string, language?: string): Promise<Segmen
 export { classify } from './highlight-core';
 export type { Segment, SyntaxNode, TokenKind } from './highlight-core';
 export type TSNodeLike = TSNode;
+
+/**
+ * The same, but laid out per line: a diff view needs one coloured run per
+ * source row. Parsing happens once for the whole fragment, which is what makes
+ * this better than highlighting line by line — a line that only makes sense in
+ * context (`} else {`) is parsed inside that context.
+ */
+export async function highlightLines(code: string, language?: string): Promise<Segment[][] | null> {
+  const segments = await highlight(code, language);
+  return segments ? segmentsByLine(segments) : null;
+}

@@ -107,6 +107,23 @@ The rules are pure (a tree is read through a small structural type), so they are
 unit-tested without loading any wasm. Unknown languages, missing grammars and
 any wasm failure render the source uncoloured — never wrong.
 
+## The other surfaces
+
+- **Diffs** (`DiffView`) colour the changed lines as source, not just green and
+  red. A diff line is a fragment, so it is not parsed alone: the post-image
+  (context + additions) and the pre-image (context + deletions) are each parsed
+  once and the tokens are handed back per line, which is what lets `} else {`
+  and a bare `}` come out right. Two parses per diff, bounded by the same 12 KB
+  cap; `git diff` in a bash card is detected from the text and gets the same
+  treatment, with the file taken from the diff header.
+- **Tool arguments** are rendered from the value itself rather than a
+  stringified blob — exact by construction, no parser involved.
+- **Command output** is arbitrary text, so only two things are detected from it:
+  a unified diff (hunk header *and* file header, so a log line that merely
+  mentions `@@` stays a log line) and a whole-JSON-document. Everything else
+  stays plain terminal text on purpose: colouring a build log as if it were
+  source would buy decoration at the cost of trust.
+
 ## Still open
 
 - Markdown is parsed once per finalized item; a 200 KB single reply still costs

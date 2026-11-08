@@ -3,8 +3,10 @@ import assert from 'node:assert/strict';
 import {
   classify,
   languageFromPath,
+  segmentsByLine,
   segmentsFromTree,
   segmentsText,
+  type Segment,
   type SyntaxNode,
 } from '../src/lib/highlight-core';
 
@@ -111,4 +113,25 @@ test('unknown or absent extensions mean plain text', () => {
   for (const p of ['README.md', 'package.json', 'data.yaml', 'Makefile', '.bashrc', '', '.', 'src']) {
     assert.equal(languageFromPath(p), undefined, p);
   }
+});
+
+test('segments split into lines without losing text', () => {
+  const segs: Segment[] = [
+    { text: 'const a = 1;\nconst b', cls: undefined },
+    { text: ' = ', cls: 'operator' },
+    { text: '2;\n', cls: 'number' },
+  ];
+  const lines = segmentsByLine(segs);
+  assert.equal(lines.length, 3);
+  assert.equal(lines.map((l) => l.map((s) => s.text).join('')).join('\n'), 'const a = 1;\nconst b = 2;\n');
+  assert.deepEqual(lines[1], [
+    { text: 'const b', cls: undefined },
+    { text: ' = ', cls: 'operator' },
+    { text: '2;', cls: 'number' },
+  ]);
+  assert.deepEqual(lines[2], []); // the trailing newline ends the block
+});
+
+test('an empty block is one empty line', () => {
+  assert.deepEqual(segmentsByLine([]), [[]]);
 });

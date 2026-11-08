@@ -1,7 +1,9 @@
 import { toolFailed, toolTarget } from '../lib/items';
 import { onToggle, usePanelOpen } from '../lib/panelState';
 import { HighlightedFile } from './Highlighted';
+import { asJson, looksLikeDiff } from '../lib/toolOutput';
 import { DiffView } from './DiffView';
+import { JsonView } from './JsonView';
 
 function StatusChip({ isError }: { isError: boolean }) {
   return (
@@ -54,6 +56,9 @@ export function ToolCard({
   // Only read_file returns file *contents*; other tools return status lines,
   // which must not be coloured as if they were source.
   const sourcePath = name === 'read_file' && !isError ? target : '';
+  // Command output that happens to be a diff or a JSON document is a lot more
+  // readable rendered as one; anything else stays the raw terminal text.
+  const outputJson = result !== undefined && !isError ? asJson(result) : undefined;
   const argsBlock =
     args !== undefined ? (
       <details className="border-t border-dashed border-slate-700">
@@ -61,7 +66,7 @@ export function ToolCard({
           arguments
         </summary>
         <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-slate-500">
-          {JSON.stringify(args, null, 2)}
+          <JsonView value={args} />
         </pre>
       </details>
     ) : null;
@@ -75,7 +80,7 @@ export function ToolCard({
           {target && <span className="break-all font-mono text-[11px] font-medium text-slate-300">{target}</span>}
         </div>
         <div className="border-t border-slate-700">
-          <DiffView diff={diff} summary={result?.split('\n')[0]} />
+          <DiffView diff={diff} summary={result?.split('\n')[0]} path={target} />
         </div>
         {argsBlock}
       </div>
@@ -101,11 +106,16 @@ export function ToolCard({
             </span>
             <span className="ml-auto">{result !== undefined ? <StatusChip isError={isError} /> : <RunningChip />}</span>
           </summary>
-          {result && (
-            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-slate-700 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
-              {result}
-            </pre>
-          )}
+          {result &&
+            (looksLikeDiff(result) ? (
+              <div className="border-t border-slate-700">
+                <DiffView diff={result} />
+              </div>
+            ) : (
+              <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-slate-700 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
+                {outputJson === undefined ? result : <JsonView value={outputJson} />}
+              </pre>
+            ))}
         </details>
       </div>
     );

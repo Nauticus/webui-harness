@@ -1,4 +1,6 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
+import { highlightLines } from '../lib/highlight';
+import { languageFromPath, TOKEN_CLASS, type Segment } from '../lib/highlight-core';
 
 interface DiffLine {
   kind: 'ctx' | 'add' | 'del' | 'hunk';
@@ -58,12 +60,78 @@ const LINE_STYLES: Record<Exclude<RenderLine['kind'], 'gap'>, string> = {
 };
 
 /**
- * Colorized unified diff that is always visible: small diffs show in full,
- * large ones show the first PREVIEW_LINES with a "show all" toggle.
+ * Which file a diff touches, from its own header. Lets a diff that arrives as
+ * plain text — `git diff` in a bash card — still be coloured by the right
+ * grammar, with nothing else to tell us.
  */
-export function DiffView({ diff, summary }: { diff: string; summary?: string }) {
+export function pathFromDiff(diff: string): string {
+  const git = /^diff --git a\/.* b\/(.*)$/m.exec(diff)?.[1];
+  if (git) return git.trim();
+  const plus = /^\+\+\+ b\/(.*)$/m.exec(diff)?.[1];
+  return plus ? plus.trim() : '';
+}
+
+/**
+ * Unified diff that is always visible: small diffs show in full, large ones
+ * show the first PREVIEW_LINES with a "show all" toggle.
+ *
+ * The changed lines are coloured as source, not just tinted green and red. A
+ * diff line is a fragment, so the fragment it belongs to is parsed as a whole —
+ * the post-image (context + additions) and the pre-image (context + deletions)
+ * — and the tokens are handed back line by line. That is what lets `} else {`
+ * and a bare `}` colour correctly: they are parsed in context, not alone.
+ * Unknown file types, and everything until the parse lands, render as before.
+ */
+export function DiffView({ diff, summary, path }: { diff: string; summary?: string; path?: string }) {
   const { lines, adds, dels } = useMemo(() => parseUnifiedDiff(diff), [diff]);
+  const language = languageFromPath(path || pathFromDiff(diff));
+  const [rowSegs, setRowSegs] = useState<(Segment[] | undefined)[]>([]);
   const large = lines.length > PREVIEW_LINES;
+
+  useEffect(() => {
+    setRowSegs([]);
+    if (!language) return;
+    let alive = true;
+    // Each rendered line maps to one line of its image; context lines exist in
+    // both and take the post-image.
+    const post: string[] = [];
+    const pre: string[] = [];
+    const postAt: (number | undefined)[] = [];
+    const preAt: (number | undefined)[] = [];
+    for (const l of lines) {
+      if (l.kind === 'ctx') {
+        postAt.push(post.push(l.text) - 1);
+        preAt.push(pre.push(l.text) - 1);
+      } else if (l.kind === 'add') {
+        postAt.push(post.push(l.text) - 1);
+        preAt.push(undefined);
+      } else if (l.kind === 'del') {
+        postAt.push(undefined);
+        preAt.push(pre.push(l.text) - 1);
+      } else {
+        postAt.push(undefined);
+        preAt.push(undefined);
+      }
+    }
+    void (async () => {
+      const [postLines, preLines] = await Promise.all([
+        highlightLines(post.join('\n'), language),
+        highlightLines(pre.join('\n'), language),
+      ]);
+      if (!alive) return;
+      setRowSegs(
+        lines.map((_, i) => {
+          const at = postAt[i];
+          if (at !== undefined) return postLines?.[at];
+          const at2 = preAt[i];
+          return at2 === undefined ? undefined : preLines?.[at2];
+        })
+      );
+    })();
+    return () => {
+      alive = false;
+    };
+  }, [lines, language]);
   const [expanded, setExpanded] = useState(false);
   const shown = large && !expanded ? lines.slice(0, PREVIEW_LINES) : lines;
   return (
@@ -92,7 +160,19 @@ export function DiffView({ diff, summary }: { diff: string; summary?: string }) 
               <span className="w-5 shrink-0 select-none text-center opacity-60">
                 {l.kind === 'add' ? '+' : l.kind === 'del' ? '−' : ' '}
               </span>
-              <span className="whitespace-pre-wrap break-words">{l.text}</span>
+              <span className="whitespace-pre-wrap break-words">
+                {rowSegs[i]?.length
+                  ? rowSegs[i]!.map((seg, j) =>
+                      seg.cls ? (
+                        <span key={j} className={TOKEN_CLASS[seg.cls]}>
+                          {seg.text}
+                        </span>
+                      ) : (
+                        seg.text
+                      )
+                    )
+                  : l.text}
+              </span>
             </div>
           )
         )}

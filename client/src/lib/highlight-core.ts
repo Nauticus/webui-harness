@@ -153,3 +153,20 @@ export function languageFromPath(path: string): string | undefined {
   const ext = base.includes('.') ? (base.split('.').pop() ?? '').toLowerCase() : '';
   return BY_EXTENSION[ext];
 }
+
+/**
+ * Split coloured segments at line boundaries, so a block parsed as one source
+ * string can be rendered line by line — which is what a diff view needs, since
+ * each of its rows is one source line. Text is preserved exactly.
+ */
+export function segmentsByLine(segments: Segment[]): Segment[][] {
+  const lines: Segment[][] = [[]];
+  for (const seg of segments) {
+    const parts = seg.text.split('\n');
+    parts.forEach((part, i) => {
+      if (i > 0) lines.push([]);
+      if (part) lines[lines.length - 1]!.push({ text: part, cls: seg.cls });
+    });
+  }
+  return lines;
+}
