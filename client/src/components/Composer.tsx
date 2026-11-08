@@ -205,7 +205,9 @@ export function Composer({
                 }`
               }
             >
-              <span className="max-w-[14rem] truncate">{model || 'auto'}</span>
+              <span className="max-w-[14rem] truncate">
+                {model ? model : defaultModel ? `auto · ${defaultModel}` : 'auto'}
+              </span>
               {model && currentGroup?.contextWindow !== undefined && (
                 <span
                   className="shrink-0 rounded-full border border-slate-700 px-1.5 text-[10px] text-slate-500"
@@ -284,7 +286,7 @@ export function Composer({
                 }
               >
                 <span className="text-violet-400/80">✦</span>
-                {effort || 'auto'}
+                {effort ? effort : defaultEffort ? `auto · ${defaultEffort}` : 'auto'}
                 <svg
                   viewBox="0 0 12 12"
                   className="h-3 w-3 transition-transform group-[aria-expanded=true]:rotate-180"
