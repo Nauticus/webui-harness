@@ -194,6 +194,7 @@ export function ChatView({
                       item={row}
                       skills={skills}
                       streaming={vi.index === streamingIndex}
+                      stateKey={`${sessionId ?? ''}/${rowKey(row, vi.index)}`}
                     />
                   )}
                 </div>

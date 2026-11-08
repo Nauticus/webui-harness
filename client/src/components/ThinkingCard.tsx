@@ -1,11 +1,22 @@
+import { onToggle, usePanelOpen } from '../lib/panelState';
 /**
  * Model reasoning, in two states:
  * - while streaming: free text, growing in the flow (no scroll panel)
  * - once complete: collapsed to a one-line header; the user expands it
  *   to read the full text (still free text, no scroll panel)
  */
-export function ThinkingCard({ content, done }: { content: string; done: boolean }) {
+export function ThinkingCard({
+  content,
+  done,
+  stateKey,
+}: {
+  content: string;
+  done: boolean;
+  /** Row key: keeps the reader's expand/collapse choice across virtualization. */
+  stateKey: string;
+}) {
   const chars = content.length;
+  const [open, setOpen] = usePanelOpen(stateKey, false);
 
   if (!done) {
     // Streaming: show the thinking as it arrives, unbounded in height.
@@ -24,7 +35,7 @@ export function ThinkingCard({ content, done }: { content: string; done: boolean
 
   // Complete: collapsed by default; native <details> handles the toggle.
   return (
-    <details className="group my-1">
+    <details className="group my-1" open={open} onToggle={onToggle(setOpen)}>
       <summary className="flex cursor-pointer select-none items-center gap-1.5 list-none text-[11px] font-medium uppercase tracking-wider text-violet-300/60 transition-colors hover:text-violet-300 [&::-webkit-details-marker]:hidden">
         <span className="text-[9px] transition-transform group-open:rotate-90">▶</span>
         thinking

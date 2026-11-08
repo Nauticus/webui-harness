@@ -2,6 +2,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Item } from '../lib/items';
 import { fmtTokens } from '../lib/context';
+import { onToggle, usePanelOpen } from '../lib/panelState';
 
 type CompactionItem = Extract<Item, { kind: 'compaction' }>;
 
@@ -12,7 +13,15 @@ type CompactionItem = Extract<Item, { kind: 'compaction' }>;
  * - once complete: collapsed to a one-line header (before -> after tokens);
  *   expands to the summary the checkpoint produced (free text, no scroll)
  */
-export function CompactionCard({ item }: { item: CompactionItem }) {
+export function CompactionCard({
+  item,
+  stateKey,
+}: {
+  item: CompactionItem;
+  /** Row key: keeps the reader's expand/collapse choice across virtualization. */
+  stateKey: string;
+}) {
+  const [open, setOpen] = usePanelOpen(stateKey, false);
   if (item.status === 'running') {
     return (
       <div className="flex items-center gap-2 px-1 py-0.5 text-[11px] uppercase tracking-wider text-indigo-300/70">
@@ -44,7 +53,7 @@ export function CompactionCard({ item }: { item: CompactionItem }) {
       : '';
 
   return (
-    <details className="group">
+    <details className="group" open={open} onToggle={onToggle(setOpen)}>
       <summary className="flex cursor-pointer select-none items-center gap-3 list-none px-2 py-1 text-[10px] uppercase tracking-wider text-slate-500 transition-colors hover:text-indigo-300 [&::-webkit-details-marker]:hidden">
         <span className="h-px flex-1 bg-slate-800 group-open:bg-slate-700" />
         <span className="flex items-center gap-1.5">

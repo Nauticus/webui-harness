@@ -1,4 +1,5 @@
 import { toolFailed, toolTarget } from '../lib/items';
+import { onToggle, usePanelOpen } from '../lib/panelState';
 import { DiffView } from './DiffView';
 
 function StatusChip({ isError }: { isError: boolean }) {
@@ -29,6 +30,7 @@ export function ToolCard({
   result,
   ok,
   diff,
+  stateKey,
 }: {
   name: string;
   args?: unknown;
@@ -36,8 +38,12 @@ export function ToolCard({
   /** Explicit outcome from the server; older history falls back to the text. */
   ok?: boolean;
   diff?: string;
+  /** Row key: keeps the reader's expand/collapse choice across virtualization. */
+  stateKey: string;
 }) {
   const isError = toolFailed({ result, ok });
+  // Open while the result is arriving, but never overrule a manual collapse.
+  const [open, setOpen] = usePanelOpen(stateKey, result !== undefined);
   const target = toolTarget(name, args);
   const argsBlock =
     args !== undefined ? (
@@ -73,7 +79,8 @@ export function ToolCard({
     return (
       <div className="w-full max-w-[85%]">
         <details
-          open={result !== undefined}
+          open={open}
+          onToggle={onToggle(setOpen)}
           className={`group overflow-hidden rounded-lg border shadow-md shadow-black/30 transition-colors hover:border-slate-500 ${
             isError ? 'border-rose-700 bg-slate-900' : 'border-slate-600/80 bg-slate-900'
           }`}
@@ -98,6 +105,8 @@ export function ToolCard({
   return (
     <div className="w-full max-w-[85%]">
       <details
+        open={open}
+        onToggle={onToggle(setOpen)}
         className={`group overflow-hidden rounded-lg border shadow-md shadow-black/30 transition-colors hover:border-slate-500 ${
           isError ? 'border-rose-700 bg-slate-900' : 'border-slate-600/80 bg-slate-900'
         }`}

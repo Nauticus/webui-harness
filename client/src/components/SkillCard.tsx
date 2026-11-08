@@ -1,5 +1,6 @@
 import type { Skill } from '../api';
 import { isSkillFile, skillDirName, toolFailed, toolTarget } from '../lib/items';
+import { onToggle, usePanelOpen } from '../lib/panelState';
 
 /** Strip leading YAML frontmatter for display (the model parsed it). */
 function bodyWithoutFrontmatter(text: string): string {
@@ -17,6 +18,7 @@ export function SkillCard({
   result,
   ok,
   skill,
+  stateKey,
 }: {
   name: string;
   args?: unknown;
@@ -24,7 +26,10 @@ export function SkillCard({
   /** Explicit outcome from the server; older history falls back to the text. */
   ok?: boolean;
   skill?: Skill;
+  /** Row key: keeps the reader's expand/collapse choice across virtualization. */
+  stateKey: string;
 }) {
+  const [open, setOpen] = usePanelOpen(stateKey, false);
   const target = toolTarget(name, args);
   const dirName = skillDirName(target);
   const display = skill?.name ?? dirName;
@@ -69,7 +74,7 @@ export function SkillCard({
                 {result}
               </pre>
             ) : (
-              <details>
+              <details open={open} onToggle={onToggle(setOpen)}>
                 <summary className="cursor-pointer select-none px-3 py-1.5 text-[11px] font-medium text-violet-400/80 transition-colors hover:text-violet-300">
                   instructions
                 </summary>

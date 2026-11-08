@@ -22,9 +22,13 @@ export const ItemView = memo(function ItemView({
   item,
   skills,
   streaming = false,
+  stateKey,
 }: {
   item: Item;
   skills?: Skill[];
+  /** Row key, handed to the collapsible cards so their open state survives
+   *  being scrolled out of the virtualized window. */
+  stateKey: string;
   /** Receiving deltas right now. Such text is rendered as plain wrapped text
    *  rather than markdown: re-parsing the whole growing reply on every frame
    *  is the single biggest client cost (measured: 3000 deltas of a ~200KB
@@ -74,7 +78,7 @@ export const ItemView = memo(function ItemView({
         </div>
       );
     case 'thinking':
-      return <ThinkingCard content={item.content} done={item.done} />;
+      return <ThinkingCard content={item.content} done={item.done} stateKey={stateKey} />;
     case 'tool': {
       // A SKILL.md read is the visible moment a skill's instructions enter
       // the context — render it as a skill card, not a generic file read.
@@ -86,13 +90,23 @@ export const ItemView = memo(function ItemView({
             result={item.result}
             ok={item.ok}
             skill={matchSkill(item.name, item.args, skills)}
+            stateKey={stateKey}
           />
         );
       }
-      return <ToolCard name={item.name} args={item.args} result={item.result} ok={item.ok} diff={item.diff} />;
+      return (
+            <ToolCard
+              name={item.name}
+              args={item.args}
+              result={item.result}
+              ok={item.ok}
+              diff={item.diff}
+              stateKey={stateKey}
+            />
+          );
     }
     case 'compaction':
-      return <CompactionCard item={item} />;
+      return <CompactionCard item={item} stateKey={stateKey} />;
     case 'stopped':
       return <div className="py-0.5 text-[11px] text-slate-500">⏹ stopped</div>;
     case 'error':
