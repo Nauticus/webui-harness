@@ -22,6 +22,8 @@
     "@types/better-sqlite3": "^7.6.12",
     "@types/diff": "^7.0.2",
     "@types/node": "^22.10.0",
+    "msw": "^3.0.4",
+    "playwright": "^1.65.0",
     "tsx": "^4.19.2",
     "typescript": "^5.7.2"
   }

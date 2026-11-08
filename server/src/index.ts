@@ -709,3 +709,7 @@ if (db.listProviders().length === 0 && process.env.OPENAI_API_KEY) {
     else app.log.warn(`model detection for "${name}" failed: ${r.error}`);
   });
 }
+
+// Exported so tests can start the server in-process (e.g. with msw mocking
+// the provider) and close it again for a clean process exit.
+export { app };

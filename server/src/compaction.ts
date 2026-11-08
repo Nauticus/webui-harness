@@ -39,6 +39,9 @@ const TOOL_ARGS_SERIALIZED_LIMIT = 400;
 /** Hard cap on the serialized span sent to the summarizer (oldest part dropped). */
 const MAX_SERIALIZED_CHARS = 400_000;
 
+/** Transient stream-drop signatures: the summarizer call is retried once for these. */
+const TRANSIENT_STREAM_RE = /terminated|socket|econnreset|etimedout|econnrefused|fetch failed|network/i;
+
 /** LlmMessage plus its history seq when it came from a persisted record. */
 export interface CompactableMessage extends LlmMessage {
   seq?: number;
@@ -164,25 +167,45 @@ function appendFileLists(summary: string, ops: FileOps): string {
 }
 
 const SUMMARY_SYSTEM_PROMPT =
-  'You are compressing a coding-agent conversation so the agent can continue with limited context. ' +
-  'You are not continuing the conversation — you are writing a handoff for the agent that will. ' +
-  'Be precise and factual; never claim work was done that the conversation does not show.';
+  'You are a context summarization assistant. Your task is to read a conversation between a user and an AI assistant, then produce a structured summary following the exact format specified.\n\n' +
+  'Do NOT continue the conversation. Do NOT respond to any questions in the conversation. ONLY output the structured summary.';
 
+const SUMMARY_FORMAT =
+  `## Goal\n[What is the user trying to accomplish? Can be multiple items if the session covers different tasks.]\n\n` +
+  `## Constraints & Preferences\n- [Any constraints, preferences, or requirements mentioned by user]\n- [Or "(none)" if none were mentioned]\n\n` +
+  `## Progress\n### Done\n- [x] [Completed tasks/changes]\n\n### In Progress\n- [ ] [Current work]\n\n### Blocked\n- [Issues preventing progress, if any]\n\n` +
+  `## Key Decisions\n- **[Decision]: [Brief rationale]\n\n` +
+  `## Next Steps\n1. [Ordered list of what should happen next]\n\n` +
+  `## Critical Context\n- [Any data, examples, or references needed to continue]\n- [Or "(none)" if not applicable]\n\n` +
+  'Keep each section concise. Preserve exact file paths, function names, and error messages.';
+
+const SUMMARIZATION_PROMPT =
+  'The messages above are a conversation to summarize. Create a structured context checkpoint summary that another LLM will use to continue the work.\n\n' +
+  'Use this EXACT format:\n\n' + SUMMARY_FORMAT;
+
+const UPDATE_SUMMARIZATION_INSTRUCTIONS =
+  'Update the existing structured summary with new information. RULES:\n' +
+  '- PRESERVE all existing information from the previous summary\n' +
+  '- ADD new progress, decisions, and context from the new messages\n' +
+  '- UPDATE the Progress section: move items from "In Progress" to "Done" when completed\n' +
+  '- UPDATE "Next Steps" based on what was accomplished\n' +
+  '- PRESERVE exact file paths, function names, and error messages\n' +
+  '- If something is no longer relevant, you may remove it\n\n' +
+  'Use this EXACT format:\n\n' + SUMMARY_FORMAT;
+
+const UPDATE_SUMMARIZATION_PROMPT =
+  'The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.\n\n' +
+  UPDATE_SUMMARIZATION_INSTRUCTIONS;
+
+/**
+ * The summarizer prompt: the conversation in <conversation> tags, the previous
+ * summary in <previous-summary> tags (when present), then the format prompt —
+ * the update variant when a previous summary exists.
+ */
 function buildSummaryPrompt(previousSummary: string | undefined, serialized: string): string {
-  return (
-    (previousSummary
-      ? `A previous summary exists. Merge its still-relevant content into the new summary (drop what is now stale):\n\n${previousSummary}\n\n`
-      : '') +
-    `Conversation to summarize:\n\n${serialized}\n\n` +
-    `Write the new summary in exactly this markdown structure (omit a subsection only when it is empty):\n\n` +
-    `## Goal\n[what the user is trying to accomplish]\n\n` +
-    `## Constraints & Preferences\n- [requirements the user stated]\n\n` +
-    `## Progress\n### Done\n- [x] [completed work]\n### In Progress\n- [ ] [current work]\n### Blocked\n- [issues, if any]\n\n` +
-    `## Key Decisions\n- **[decision]**: [rationale]\n\n` +
-    `## Next Steps\n1. [what should happen next]\n\n` +
-    `## Critical Context\n- [facts needed to continue: file states, untested changes, versions]\n\n` +
-    `Output only the summary markdown — no preamble, and no file lists (those are appended separately).`
-  );
+  let prompt = `<conversation>\n${serialized}\n</conversation>\n\n`;
+  if (previousSummary) prompt += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
+  return prompt + (previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT);
 }
 
 export interface CompactResult {
@@ -287,27 +310,67 @@ export async function* compactMessages(opts: {
   }
 
   const client = providerClient(provider);
-  const stream = await client.chat.completions.create(
-    {
-      model,
-      messages: [
-        { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
-        { role: 'user', content: buildSummaryPrompt(previousSummary, serialized) },
-      ] as ChatCompletionMessageParam[],
-      stream: true,
-      ...effortParams,
-    },
-    { signal }
-  );
-  let summary = '';
-  for await (const chunk of stream) {
-    const delta = chunk.choices[0]?.delta?.content;
-    if (delta) {
-      summary += delta;
-      yield summary; // live progress: the summary so far
+  // One summarizer attempt: streams the partial summary, returns the trimmed
+  // full text. A length stop means the summary is truncated — reject it.
+  const runSummarizer = async function* (): AsyncGenerator<string, string> {
+    const stream = await client.chat.completions.create(
+      {
+        model,
+        messages: [
+          { role: 'system', content: SUMMARY_SYSTEM_PROMPT },
+          { role: 'user', content: buildSummaryPrompt(previousSummary, serialized) },
+        ] as ChatCompletionMessageParam[],
+        stream: true,
+        ...effortParams,
+      },
+      { signal }
+    );
+    let text = '';
+    let finishReason: string | undefined;
+    for await (const chunk of stream) {
+      const choice = chunk.choices[0];
+      const delta = choice?.delta?.content;
+      if (delta) {
+        text += delta;
+        yield text; // live progress: the summary so far
+      }
+      if (choice?.finish_reason) finishReason = choice.finish_reason;
     }
+    if (finishReason === 'length') {
+      throw new Error('compaction: generation hit the token cap and the summary is incomplete');
+    }
+    return text.trim();
+  };
+  // Retried once on a transient stream drop (a dropped connection is not a
+  // summary failure). Aborts and non-transient errors are never retried.
+  const runWithRetry = async function* (): AsyncGenerator<string, string> {
+    try {
+      const it = runSummarizer();
+      let step = await it.next();
+      while (!step.done) {
+        yield step.value;
+        step = await it.next();
+      }
+      return step.value;
+    } catch (err) {
+      const transient = err instanceof Error && TRANSIENT_STREAM_RE.test(String(err.message));
+      if (!transient || signal?.aborted) throw err;
+      const it = runSummarizer();
+      let step = await it.next();
+      while (!step.done) {
+        yield step.value;
+        step = await it.next();
+      }
+      return step.value;
+    }
+  };
+  const retryIt = runWithRetry();
+  let step = await retryIt.next();
+  while (!step.done) {
+    yield step.value;
+    step = await retryIt.next();
   }
-  summary = summary.trim();
+  const summary = step.value;
   if (!summary) throw new Error('compaction: model returned an empty summary');
 
   return {

@@ -1,161 +1,138 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawn, type ChildProcess } from 'node:child_process';
+import { http, HttpResponse } from 'msw';
+import { setupServer } from 'msw/node';
 
 /**
- * End-to-end compaction test with a mock OpenAI-compatible provider:
- * - spawns the real server (tsx) with a small COMPACT_CONTEXT_WINDOW
+ * End-to-end compaction test with msw mocking the provider (OpenAI-compatible
+ * /v1 endpoint) and the real server running in-process:
+ * - starts the real server (imported, listening on a real port) with a small
+ *   COMPACT_CONTEXT_WINDOW
  * - verifies normal turns (regression)
  * - verifies pre-turn + mid-turn compaction, summary re-injection, and the
  *   persisted 'compaction' records
  * - verifies overflow recovery directly through runAgentTurn
+ *
+ * msw intercepts the provider calls in-process; the test's own fetches to the
+ * app API pass through (onUnhandledRequest: 'bypass').
  */
 
-const MOCK_PORT = 3479;
 const APP_PORT = 3480;
 const APP_BASE = `http://127.0.0.1:${APP_PORT}`;
-const MOCK_BASE = `http://127.0.0.1:${MOCK_PORT}/v1`;
+const MOCK_BASE = 'http://mock-provider.e2e/v1';
 const MOCK_SUMMARY =
   '## Goal\nDo the test thing\n\n## Progress\n### Done\n- [x] echoed hello from the shell';
 
-// ---------- mock provider ----------
+// ---------- msw-mocked provider ----------
 
 let mockMode: 'normal' | 'error-once' = 'normal';
 let errorOnceArmed = false;
-const mockRequests: unknown[] = [];
+const mockRequests: Record<string, unknown>[] = [];
 
 /** True when the captured request is a compaction summarizer call. */
-const isSummarizerReq = (r: unknown) => {
-  const msgs = (r as { messages?: { role?: string; content?: unknown }[] }).messages ?? [];
-  const last = msgs[msgs.length - 1];
-  return last?.role === 'user' && String(last.content ?? '').includes('Conversation to summarize:');
+const isSummarizerReq = (r: Record<string, unknown>) => {
+  const msgs = (r.messages ?? []) as { role?: string; content?: unknown }[];
+  const system = msgs.find((m) => m.role === 'system');
+  return system !== undefined && String(system.content ?? '').includes('context summarization assistant');
 };
 
-function sseWrite(res: http.ServerResponse, obj: unknown) {
-  res.write(`data: ${JSON.stringify(obj)}\n\n`);
-}
-
-function streamToolCall(res: http.ServerResponse) {
-  const chunk = (delta: unknown) =>
-    sseWrite(res, { id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta }] });
-  chunk({ role: 'assistant', content: '' });
-  chunk({
-    tool_calls: [
-      {
-        index: 0,
-        id: 'call_mock_1',
-        type: 'function',
-        function: { name: 'bash', arguments: '{"command":"echo mock-hello"}' },
-      },
-    ],
+function sseResponse(chunks: unknown[]): Response {
+  const encoder = new TextEncoder();
+  const stream = new ReadableStream<Uint8Array>({
+    start(controller) {
+      for (const c of chunks) controller.enqueue(encoder.encode(`data: ${JSON.stringify(c)}\n\n`));
+      controller.enqueue(encoder.encode('data: [DONE]\n\n'));
+      controller.close();
+    },
   });
-  chunk({});
-  res.write('data: [DONE]\n\n');
-  res.end();
+  return new HttpResponse(stream, { headers: { 'Content-Type': 'text/event-stream' } });
 }
 
-function streamText(res: http.ServerResponse, text: string) {
-  const chunk = (delta: unknown) =>
-    sseWrite(res, { id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta }] });
-  chunk({ role: 'assistant', content: '' });
-  chunk({ content: text });
-  chunk({});
-  res.write('data: [DONE]\n\n');
-  res.end();
+function sseChunks(text: string): unknown[] {
+  const out: unknown[] = [
+    { id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] },
+  ];
+  for (const piece of text.match(/.{1,24}/gs) ?? [])
+    out.push({ id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { content: piece } }] });
+  out.push({ id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {} }] });
+  return out;
 }
 
-const mock = http.createServer((req, res) => {
-  if (req.method === 'GET' && req.url === '/v1/models') {
-    res.setHeader('Content-Type', 'application/json');
-    res.end(
-      JSON.stringify({
-        data: [
-          { id: 'mock-model-1' },
-          { id: 'mock-model-1-2025-01-01' }, // dated snapshot of mock-model-1
-          { id: 'mock-model-1:free' }, // service variant of mock-model-1
-          { id: 'mock-model-2' },
-        ],
-      })
-    );
-    return;
-  }
-  if (req.method === 'GET' && req.url === '/v1/requests') {
-    res.setHeader('Content-Type', 'application/json');
-    res.end(JSON.stringify(mockRequests));
-    return;
-  }
-  if (req.method === 'POST' && req.url === '/v1/chat/completions') {
-    let body = '';
-    req.on('data', (d) => (body += d));
-    req.on('end', () => {
-      const parsed = JSON.parse(body);
-      mockRequests.push(parsed);
-      const messages = (parsed.messages ?? []) as { role: string; content?: unknown }[];
-      const lastRole = messages[messages.length - 1]?.role;
-      const hasToolResult = messages.some((m) => m.role === 'tool');
+function streamToolCall(): unknown[] {
+  return [
+    { id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: { role: 'assistant', content: '' } }] },
+    {
+      id: 'm1',
+      object: 'chat.completion.chunk',
+      choices: [
+        {
+          index: 0,
+          delta: {
+            tool_calls: [
+              {
+                index: 0,
+                id: 'call_mock_1',
+                type: 'function',
+                function: { name: 'bash', arguments: '{"command":"echo mock-hello"}' },
+              },
+            ],
+          },
+        },
+      ],
+    },
+    { id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta: {} }] },
+  ];
+}
 
-      // The compaction summarizer (identified by its prompt, now streamed).
-      if (isSummarizerReq(parsed)) {
-        if (parsed.stream !== true) {
-          res.setHeader('Content-Type', 'application/json');
-          res.end(
-            JSON.stringify({
-              id: 'm1',
-              object: 'chat.completion',
-              model: parsed.model,
-              choices: [{ index: 0, message: { role: 'assistant', content: MOCK_SUMMARY }, finish_reason: 'stop' }],
-              usage: { prompt_tokens: 1, completion_tokens: 1, total_tokens: 2 },
-            })
-          );
-          return;
-        }
-        res.setHeader('Content-Type', 'text/event-stream');
-        // Split the summary in chunks so progress events are exercised.
-        const chunk = (delta: unknown) =>
-          sseWrite(res, { id: 'm1', object: 'chat.completion.chunk', choices: [{ index: 0, delta }] });
-        chunk({ role: 'assistant', content: '' });
-        for (const [i, piece] of MOCK_SUMMARY.match(/.{1,24}/gs)?.entries() ?? []) chunk({ content: piece });
-        chunk({});
-        res.write('data: [DONE]\n\n');
-        res.end();
-        return;
-      }
+const providerServer = setupServer(
+  http.get(`${MOCK_BASE}/models`, () =>
+    HttpResponse.json({
+      data: [
+        { id: 'mock-model-1' },
+        { id: 'mock-model-1-2025-01-01' }, // dated snapshot of mock-model-1
+        { id: 'mock-model-1:free' }, // service variant of mock-model-1
+        { id: 'mock-model-2' },
+      ],
+    })
+  ),
+  http.post(`${MOCK_BASE}/chat/completions`, async ({ request }) => {
+    const parsed = (await request.json()) as Record<string, unknown>;
+    mockRequests.push(parsed);
+    const messages = (parsed.messages ?? []) as { role: string; content?: unknown }[];
+    const lastRole = messages[messages.length - 1]?.role;
+    const hasToolResult = messages.some((m) => m.role === 'tool');
 
-      // One-shot context-overflow error for the recovery test.
-      if (mockMode === 'error-once' && errorOnceArmed) {
-        errorOnceArmed = false;
-        res.statusCode = 400;
-        res.setHeader('Content-Type', 'application/json');
-        res.end(
-          JSON.stringify({
-            error: {
-              message: 'This model\'s maximum context length is 100 tokens, but you requested 200',
-              type: 'invalid_request_error',
-            },
-          })
-        );
-        return;
-      }
+    // The compaction summarizer (identified by its prompt, streamed).
+    if (isSummarizerReq(parsed)) {
+      return sseResponse(sseChunks(MOCK_SUMMARY));
+    }
 
-      res.setHeader('Content-Type', 'text/event-stream');
-      if (!hasToolResult && lastRole === 'user') streamToolCall(res);
-      else streamText(res, 'done: mock replied');
-    });
-    return;
-  }
-  res.statusCode = 404;
-  res.end('not found');
-});
+    // One-shot context-overflow error for the recovery test.
+    if (mockMode === 'error-once' && errorOnceArmed) {
+      errorOnceArmed = false;
+      return HttpResponse.json(
+        {
+          error: {
+            message: "This model's maximum context length is 100 tokens, but you requested 200",
+            type: 'invalid_request_error',
+          },
+        },
+        { status: 400 }
+      );
+    }
 
-// ---------- server under test ----------
+    return sseResponse(!hasToolResult && lastRole === 'user' ? streamToolCall() : sseChunks('done: mock replied'));
+  })
+);
 
-let app: ChildProcess;
-let dataDir: string;
-let workspace: string;
+// ---------- server under test (in-process) ----------
+
+let app: { close: () => Promise<void> } | null = null;
+let dataDir = '';
+let workspace = '';
 
 function post(path: string, body: unknown) {
   return fetch(`${APP_BASE}${path}`, {
@@ -186,26 +163,22 @@ async function streamTurn(sessionId: string, content: string): Promise<SseEvent[
 }
 
 test.before(async () => {
-  await new Promise<void>((resolve) => mock.listen(MOCK_PORT, '127.0.0.1', resolve));
   dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-e2e-data-'));
   workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-e2e-ws-'));
-  app = spawn('npx', ['tsx', 'src/index.ts'], {
-    cwd: path.resolve(new URL('..', import.meta.url).pathname),
-    env: {
-      ...process.env,
-      PORT: String(APP_PORT),
-      WEBLISAN_DATA_DIR: dataDir,
-      // The env window is deliberately huge: compaction in this test must
-      // come from the per-model context window configured on the provider,
-      // not from the env fallback.
-      COMPACT_CONTEXT_WINDOW: '100000',
-      COMPACT_RESERVE_TOKENS: '2000',
-      COMPACT_KEEP_RECENT_TOKENS: '1000',
-    },
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  app.stdout?.on('data', (d: Buffer) => process.env.WEBLISAN_E2E_DEBUG && process.stderr.write(`[app] ${d}`));
-  app.stderr?.on('data', (d: Buffer) => process.env.WEBLISAN_E2E_DEBUG && process.stderr.write(`[app!] ${d}`));
+  // The env window is deliberately huge: compaction in this test must come
+  // from the per-model context window configured on the provider, not from
+  // the env fallback. Set before the import: the server reads these at
+  // module load.
+  process.env.PORT = String(APP_PORT);
+  process.env.WEBLISAN_DATA_DIR = dataDir;
+  process.env.AGENT_WORKSPACE_DIR = workspace;
+  process.env.COMPACT_CONTEXT_WINDOW = '100000';
+  process.env.COMPACT_RESERVE_TOKENS = '2000';
+  process.env.COMPACT_KEEP_RECENT_TOKENS = '1000';
+  process.env.OPENAI_API_KEY = ''; // no .env import of a real provider
+  providerServer.listen({ onUnhandledFrame: 'bypass' });
+  const mod = await import('../src/index');
+  app = mod.app;
   // Wait for /api/health.
   const deadline = Date.now() + 30_000;
   for (;;) {
@@ -221,9 +194,8 @@ test.before(async () => {
 });
 
 test.after(async () => {
-  app?.kill();
-  await new Promise((r) => setTimeout(r, 200));
-  mock.close();
+  await app?.close();
+  providerServer.close();
   fs.rmSync(dataDir, { recursive: true, force: true });
   fs.rmSync(workspace, { recursive: true, force: true });
 });
@@ -314,14 +286,14 @@ test('e2e: normal turn, pre-turn compaction, mid-turn compaction, overflow recov
     // The summarizer request received the serialized span.
     const summaryReq = mockRequests.find((r) => isSummarizerReq(r));
     assert.ok(summaryReq, 'expected a summarizer call');
-    const reqUser = (summaryReq as { messages: { content?: string }[] }).messages[1]!;
+    const reqUser = (summaryReq!.messages as { content?: string }[])[1]!;
     assert.ok(String(reqUser.content).includes('[User]:'), 'serialized span should use [User] labels');
     assert.ok(String(reqUser.content).includes('echo mock-hello'));
     // The final streaming request contains the summary as a user message and
     // does NOT contain the summarized small rows... but it does contain the
     // large user message (it is the kept tail).
-    const streamReqs = mockRequests.filter((r) => (r as { stream?: unknown }).stream === true);
-    const lastStream = streamReqs[streamReqs.length - 1] as { messages: { content?: string | null }[] };
+    const streamReqs = mockRequests.filter((r) => r.stream === true);
+    const lastStream = streamReqs[streamReqs.length - 1]! as { messages: { content?: string | null }[] };
     const summaryMsg = lastStream.messages.find((m) => String(m.content ?? '').startsWith('CONTEXT SUMMARY'));
     assert.ok(summaryMsg, 'expected CONTEXT SUMMARY message in the request');
     assert.ok(String(summaryMsg!.content).includes('Do the test thing'));
@@ -347,11 +319,9 @@ test('e2e: normal turn, pre-turn compaction, mid-turn compaction, overflow recov
     const events = await streamTurn(sessionId, 'and now finish');
     const complete = events.find((e) => e.type === 'message.complete');
     assert.ok(complete && String(complete.content).includes('done: mock replied'));
-    const streamReqs = mockRequests.filter(
-      (r) => (r as { stream?: unknown }).stream === true && !isSummarizerReq(r)
-    );
+    const streamReqs = mockRequests.filter((r) => r.stream === true && !isSummarizerReq(r));
     assert.ok(streamReqs.length >= 1);
-    const req = streamReqs[0] as { messages: { content?: string | null }[] };
+    const req = streamReqs[0]! as { messages: { content?: string | null }[] };
     assert.ok(req.messages.some((m) => String(m.content ?? '').startsWith('CONTEXT SUMMARY')));
     // The 16k-char message must be gone unless it is still inside the kept
     // tail; here the tail kept it in the previous turn, so check the first
@@ -362,10 +332,8 @@ test('e2e: normal turn, pre-turn compaction, mid-turn compaction, overflow recov
 });
 
 test('e2e: overflow recovery compacts once and retries the step', { timeout: 60_000 }, async () => {
-  // Import the agent module with the small compaction threshold env.
-  process.env.COMPACT_CONTEXT_WINDOW = '5000';
-  process.env.COMPACT_RESERVE_TOKENS = '2000';
-  process.env.COMPACT_KEEP_RECENT_TOKENS = '1000';
+  // Same in-process module: the compaction constants were loaded with the
+  // env set in test.before (reserve 2000, keep-recent 1000).
   const { runAgentTurn } = await import('../src/agent');
 
   mockMode = 'error-once';
