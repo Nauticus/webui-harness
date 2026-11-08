@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
-import { api } from './api';
+import { api, type ModelGroup } from './api';
 import { useProjects } from './hooks/useProjects';
 import { useSessions } from './hooks/useSessions';
 import { useProviders } from './hooks/useProviders';
@@ -13,11 +13,17 @@ import { Composer } from './components/Composer';
 import { ProjectDialog, type ProjectDialogState } from './components/dialogs/ProjectDialog';
 import { ProvidersPanel } from './components/dialogs/ProvidersPanel';
 
+/** Stable empty fallback: an inline `[]` would be a new prop on every render
+ *  and defeat the memoized composer. */
+const NO_GROUPS: ModelGroup[] = [];
+
 /** Full-width context-usage bar, sitting on the border between the chat
- * and the composer. Amber when compaction is armed, red at the wall. */
+ * and the composer. Amber when compaction is armed, red at the wall.
+ * `threshold` is a token count (the server's compaction trigger), not a
+ * percentage — comparing it against the percentage made it unreachable. */
 function ContextBar({ tokens, window, threshold }: { tokens: number; window: number; threshold: number }) {
   const pct = Math.max(0, Math.min(100, (tokens / window) * 100));
-  const armed = pct >= threshold;
+  const armed = tokens >= threshold;
   const tone = pct >= 100 ? 'bg-red-500' : armed ? 'bg-amber-500' : 'bg-indigo-500';
   return (
     <div
@@ -52,6 +58,18 @@ export default function App() {
   const activeProject = projects.projects.find((p) => p.id === projectId) ?? null;
   const composerProvider = providers.composerProvider(activeProject?.provider_id);
   const activeSession = sessions.sessions.find((s) => s.id === sessionId) ?? null;
+  // Stable pieces of the hooks: the memoized composer/sidebar/header compare
+  // props by identity, so the callbacks handed to them must not be rebuilt on
+  // every render (which happens once per streamed frame).
+  const { refreshSessions, removeSession: deleteSession, updateSessionLocal } = sessions;
+  const onSessionModelUpdated = useCallback(
+    (id: string, model: string) => updateSessionLocal(id, { model }),
+    [updateSessionLocal]
+  );
+  const onSessionEffortUpdated = useCallback(
+    (id: string, reasoningEffort: string) => updateSessionLocal(id, { reasoningEffort }),
+    [updateSessionLocal]
+  );
 
   const chat = useChatTurn({
     activeProjectId: projectId ?? null,
@@ -61,10 +79,10 @@ export default function App() {
     refreshSessions: sessions.refreshSessions,
     onSessionCreated: (id) =>
       projectId && navigate({ to: '/$projectId/$sessionId', params: { projectId, sessionId: id } }),
-    onSessionModelUpdated: (id, model) => sessions.updateSessionLocal(id, { model }),
-    onSessionEffortUpdated: (id, reasoningEffort) =>
-      sessions.updateSessionLocal(id, { reasoningEffort }),
+    onSessionModelUpdated: onSessionModelUpdated,
+    onSessionEffortUpdated: onSessionEffortUpdated,
   });
+  const { pendingModelFor, clearPendingModel } = chat;
 
   // First load: fetch providers + projects. On the bare root (no project in
   // the URL) redirect to the first project and its first session.
@@ -127,22 +145,24 @@ export default function App() {
 
   const newSession = useCallback(async () => {
     if (!projectId) return;
-    const s = await api.createSession(projectId, chat.pendingModelFor(projectId));
-    chat.clearPendingModel(projectId);
-    await sessions.refreshSessions(projectId);
+    const s = await api.createSession(projectId, pendingModelFor(projectId));
+    clearPendingModel(projectId);
+    await refreshSessions(projectId);
     navigate({ to: '/$projectId/$sessionId', params: { projectId, sessionId: s.id } });
     setLoadError(null);
-  }, [projectId, chat, sessions, navigate]);
+  }, [projectId, pendingModelFor, clearPendingModel, refreshSessions, navigate]);
 
   const removeSession = useCallback(
-    async (id: string) => {
-      await sessions.removeSession(id);
-      if (projectId) await sessions.refreshSessions(projectId);
+    async (id: string, title: string) => {
+      // One click used to delete the session and its history outright.
+      if (!window.confirm(`Delete “${title}”? Its history is deleted too.`)) return;
+      await deleteSession(id);
+      if (projectId) await refreshSessions(projectId);
       if (sessionId === id && projectId) {
         navigate({ to: '/$projectId', params: { projectId } });
       }
     },
-    [projectId, sessionId, sessions, navigate]
+    [projectId, sessionId, deleteSession, refreshSessions, navigate]
   );
 
   const onProjectCreated = useCallback(
@@ -178,8 +198,33 @@ export default function App() {
 
   const onboarding = projects.projectsLoaded && projects.projects.length === 0;
 
+  // Callbacks for the memoized shell parts: rebuilt only when what they act on
+  // changes, never because a token arrived.
+  const onNewSession = useCallback(() => void newSession(), [newSession]);
+  const onRemoveSession = useCallback(
+    (id: string, title: string) => void removeSession(id, title),
+    [removeSession]
+  );
+  const onToggleProviders = useCallback(() => {
+    setProvidersOpen((v) => !v);
+    setDialog(null);
+  }, []);
+  const onNewProject = useCallback(() => setDialog({ mode: 'create' }), []);
+  const onEditProject = useCallback(
+    () => activeProject && setDialog({ mode: 'edit', project: activeProject }),
+    [activeProject]
+  );
+  const onSend = useCallback(() => void chat.send(), [chat.send]);
+  const onStop = useCallback(() => chat.abort(), [chat.abort]);
+  const onModelChange = useCallback((v: string) => void chat.setModel(v), [chat.setModel]);
+  const onEffortChange = useCallback((v: string) => void chat.setEffort(v), [chat.setEffort]);
+
   // Banner: a turn is running in another session.
   const runningElsewhere = chat.runningSessionId && chat.runningSessionId !== sessionId;
+  // Only this session's own turn may make the transcript look busy: `chat.busy`
+  // is global, so a turn in another session would otherwise put a placeholder
+  // (and live-rendering markup) on a static transcript.
+  const busyHere = chat.busy && chat.runningSessionId === sessionId;
   const runningTitle = runningElsewhere
     ? sessions.sessions.find((s) => s.id === chat.runningSessionId)?.title ?? 'another session'
     : '';
@@ -191,9 +236,9 @@ export default function App() {
         activeProject={activeProject}
         activeSessionId={sessionId ?? null}
         runningSessionId={chat.runningSessionId}
-        onNewSession={() => void newSession()}
+        onNewSession={onNewSession}
         onSelect={loadSession}
-        onRemove={(id) => void removeSession(id)}
+        onRemove={onRemoveSession}
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
@@ -202,13 +247,10 @@ export default function App() {
           activeProject={activeProject}
           providersOpen={providersOpen}
           hasDetectionFailure={providers.hasDetectionFailure}
-          onToggleProviders={() => {
-            setProvidersOpen((v) => !v);
-            setDialog(null);
-          }}
+          onToggleProviders={onToggleProviders}
           onSelectProject={selectProject}
-          onNewProject={() => setDialog({ mode: 'create' })}
-          onEditProject={() => activeProject && setDialog({ mode: 'edit', project: activeProject })}
+          onNewProject={onNewProject}
+          onEditProject={onEditProject}
         />
 
         {providersOpen && (
@@ -242,7 +284,7 @@ export default function App() {
                 Open
               </button>
               <button
-                onClick={() => chat.abort()}
+                onClick={onStop}
                 className="rounded border border-rose-500/40 px-2 py-0.5 text-rose-300 transition-colors hover:bg-rose-500/15"
               >
                 Stop
@@ -253,12 +295,13 @@ export default function App() {
 
         <ChatView
           items={chat.items}
-          busy={chat.busy}
+          busy={busyHere}
+          sessionId={sessionId ?? null}
           onboarding={onboarding}
           activeProject={activeProject}
           hasActiveSession={sessionId !== null}
           loadError={loadError}
-          onCreateProject={() => setDialog({ mode: 'create' })}
+          onCreateProject={onNewProject}
           context={chat.context}
           skills={skills}
         />
@@ -267,20 +310,20 @@ export default function App() {
         )}
         <Composer
           model={chat.modelValue}
-          modelGroups={composerProvider?.model_groups ?? []}
+          modelGroups={composerProvider?.model_groups ?? NO_GROUPS}
           defaultModel={composerProvider?.default_model ?? ''}
           defaultEffort={composerProvider?.default_reasoning_effort ?? ''}
           input={chat.input}
           busy={chat.busy}
           disabled={!activeProject}
           placeholder={activeProject ? 'Ask the agent to do something…' : 'Create a project first…'}
-          onModelChange={(v) => void chat.setModel(v)}
-          onEffortChange={(v) => void chat.setEffort(v)}
+          onModelChange={onModelChange}
+          onEffortChange={onEffortChange}
           effort={chat.effortValue}
           onInput={chat.setInput}
           onKeyDown={chat.onKeyDown}
-          onSend={() => void chat.send()}
-          onStop={() => chat.abort()}
+          onSend={onSend}
+          onStop={onStop}
           skills={skills}
         />
       </main>

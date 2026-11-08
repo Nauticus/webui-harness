@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { applyEvent, settleCompaction, initialTurnState, type TurnState } from '../src/lib/chatEvents';
+import { applyEvent, settleCompaction, withStopped, initialTurnState, type TurnState } from '../src/lib/chatEvents';
 import type { Item } from '../src/lib/items';
 import type { ServerEvent } from '../src/api';
 
@@ -78,6 +78,15 @@ test('message.stopped: appends the stopped marker and partial content when not s
   assert.deepEqual(s.items, [assistant('part'), { kind: 'stopped' }]);
   const streamed = applyEvent(st({ items: [assistant('part')], streamed: true }), ev({ type: 'message.stopped', content: 'part', tokens: 3 }));
   assert.deepEqual(streamed.items, [assistant('part'), { kind: 'stopped' }]);
+});
+
+test('the stop marker is appended once (abort and a late event meet)', () => {
+  const aborted = withStopped(st({ items: [assistant('part')] }));
+  assert.deepEqual(aborted.items, [assistant('part'), { kind: 'stopped' }]);
+  // The server's message.stopped arrives after abort() already marked it.
+  const late = applyEvent(aborted, ev({ type: 'message.stopped', content: '' }));
+  assert.deepEqual(late.items, [assistant('part'), { kind: 'stopped' }]);
+  assert.equal(withStopped(late).items.length, 2);
 });
 
 test('error: appends an error item', () => {

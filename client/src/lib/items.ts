@@ -19,6 +19,44 @@ export type Item =
     }
   | { kind: 'stopped' };
 
+/**
+ * A rendered row: a chat item, plus the display-only "waiting for the model"
+ * placeholder. The placeholder never enters an Item list (it is not an event
+ * and is never persisted) — it only exists in the view's row list.
+ */
+export type ChatRow = Item | { kind: 'busy' };
+
+/**
+ * True while a turn is running but nothing on screen is visibly growing, so
+ * the transcript itself has to say "working". Each case names what the user
+ * is waiting behind: the first token, a settled thinking block, the next LLM
+ * call after a tool finished, or a compaction that just landed. Anything
+ * already streaming (assistant text, an open thinking block, a running tool
+ * or compaction card) has its own live signal and needs no placeholder.
+ */
+export function isAwaitingModel(items: Item[], busy: boolean): boolean {
+  if (!busy) return false;
+  const last = items[items.length - 1];
+  if (!last) return true;
+  switch (last.kind) {
+    case 'user':
+      return true;
+    case 'thinking':
+      return last.done;
+    case 'tool':
+      return last.result !== undefined;
+    case 'compaction':
+      return last.status === 'done';
+    default:
+      return false;
+  }
+}
+
+/** The items to render: the chat items, plus the placeholder when waiting. */
+export function toRows(items: Item[], busy: boolean): ChatRow[] {
+  return isAwaitingModel(items, busy) ? [...items, { kind: 'busy' }] : items;
+}
+
 export function rowsToItems(rows: MessageRow[]): Item[] {
   const items: Item[] = [];
   for (const r of rows) {

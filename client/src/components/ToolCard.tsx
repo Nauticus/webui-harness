@@ -51,7 +51,7 @@ export function ToolCard({
   // With a diff, the change itself is the headline: always visible, no expand needed.
   if (diff) {
     return (
-      <div className="w-full max-w-[85%] self-start overflow-hidden rounded-lg border border-slate-600/80 bg-slate-900 shadow-md shadow-black/30">
+      <div className="w-full max-w-[85%] overflow-hidden rounded-lg border border-slate-600/80 bg-slate-900 shadow-md shadow-black/30">
         <div className="flex items-center gap-2 px-3 py-2 text-xs text-slate-300">
           <span className="shrink-0 font-semibold text-emerald-400">{name}</span>
           {target && <span className="break-all font-mono text-[11px] font-medium text-slate-300">{target}</span>}
@@ -68,7 +68,7 @@ export function ToolCard({
   // with a prompt, and the output is open by default.
   if (name === 'bash' && target) {
     return (
-      <div className="w-full max-w-[85%] self-start">
+      <div className="w-full max-w-[85%]">
         <details
           open={result !== undefined}
           className={`group overflow-hidden rounded-lg border shadow-md shadow-black/30 transition-colors hover:border-slate-500 ${
@@ -93,7 +93,7 @@ export function ToolCard({
   }
 
   return (
-    <div className="w-full max-w-[85%] self-start">
+    <div className="w-full max-w-[85%]">
       <details
         className={`group overflow-hidden rounded-lg border shadow-md shadow-black/30 transition-colors hover:border-slate-500 ${
           isError ? 'border-rose-700 bg-slate-900' : 'border-slate-600/80 bg-slate-900'

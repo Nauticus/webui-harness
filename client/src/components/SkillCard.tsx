@@ -28,7 +28,7 @@ export function SkillCard({
   const isError = result !== undefined && result.startsWith('error');
 
   return (
-    <div className="w-full max-w-[85%] self-start">
+    <div className="w-full max-w-[85%]">
       <div className="overflow-hidden rounded-lg border border-violet-500/50 bg-violet-950/30 shadow-md shadow-black/30">
         <div className="flex items-center gap-2 border-b border-violet-500/30 bg-violet-500/10 px-3 py-2">
           <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded bg-violet-500/25 text-[11px] font-bold text-violet-300">

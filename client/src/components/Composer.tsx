@@ -1,4 +1,4 @@
-import { useEffect, useState, type KeyboardEvent } from 'react';
+import { memo, useEffect, useState, type KeyboardEvent } from 'react';
 import { Select } from '@base-ui-components/react/select';
 import type { ModelGroup, Skill } from '../api';
 
@@ -25,7 +25,7 @@ const EFFORT_OPTIONS: { value: string; label: string; hint: string }[] = [
   { value: 'xhigh', label: 'xhigh', hint: 'deepest' },
 ];
 
-export function Composer({
+export const Composer = memo(function Composer({
   model,
   modelGroups,
   effort,
@@ -62,6 +62,9 @@ export function Composer({
   skills?: Skill[];
 }) {
   const [acIndex, setAcIndex] = useState(0);
+  /** Escape closes the menu without touching the text; it reopens as soon as
+   *  the query changes. */
+  const [acDismissed, setAcDismissed] = useState(false);
 
   // /skill: autocomplete — a single leading "/token" (no spaces yet).
   // The server expands /skill:name [task] into the skill's instructions.
@@ -78,14 +81,19 @@ export function Composer({
       : (skills ?? []).filter(
           (sk) => acQuery === '' || sk.name.startsWith(acQuery) || sk.name.includes(acQuery)
         );
-  const acOpen = acQuery !== null && acMatches.length > 0 && !busy && !disabled;
+  const acOpen = acQuery !== null && acMatches.length > 0 && !acDismissed && !disabled;
   useEffect(() => {
     setAcIndex(0);
+    setAcDismissed(false);
   }, [acQuery]);
   const insertSkill = (skill: Skill) => {
     onInput(`/skill:${skill.name} `);
   };
+  /** True while an IME is composing — there, Enter confirms a candidate. */
+  const composing = (e: KeyboardEvent<HTMLTextAreaElement>) =>
+    e.nativeEvent.isComposing || e.keyCode === 229;
   const handleKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
+    if (composing(e)) return;
     if (acOpen) {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
@@ -105,10 +113,14 @@ export function Composer({
       }
       if (e.key === 'Escape') {
         e.preventDefault();
-        onInput('');
+        setAcDismissed(true);
         return;
       }
     }
+    // While the agent works the composer stays editable and Enter adds a
+    // newline instead of sending: nothing typed is lost, nothing is sent
+    // into a running turn by accident.
+    if (busy && e.key === 'Enter' && !e.shiftKey) return;
     onKeyDown(e);
   };
 
@@ -158,7 +170,7 @@ export function Composer({
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             rows={2}
-            disabled={busy || disabled}
+            disabled={disabled}
             className="max-h-40 min-h-[3rem] flex-1 resize-none bg-transparent px-2 py-1.5 text-sm outline-none placeholder:text-slate-600 disabled:opacity-50"
           />
           {busy ? (
@@ -320,10 +332,15 @@ export function Composer({
             </Select.Root>
           </div>
           <div className="flex items-center gap-3">
-            <p className="text-[11px] text-slate-600">Enter to send · Shift+Enter for newline{(skills ?? []).length > 0 ? " · / for skills" : ""}</p>
+            <p className="text-[11px] text-slate-600">
+              {busy
+                ? 'Agent is working — Enter adds a newline'
+                : 'Enter to send · Shift+Enter for newline'}
+              {(skills ?? []).length > 0 ? ' · / for skills' : ''}
+            </p>
           </div>
         </div>
       </div>
     </footer>
   );
-}
+});

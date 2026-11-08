@@ -20,24 +20,32 @@ export function initialTurnState(): TurnState {
 
 /**
  * A non-thinking event arrived: any still-streaming thinking block is
- * finished, so mark it done.
+ * finished, so mark it done. This runs on every delta, so it looks first and
+ * only allocates when something actually needs settling — most of the time
+ * the answer is "nothing open" and the array keeps its identity.
  */
 function settleThinking(items: Item[]): Item[] {
-  return items.map((it) =>
-    it.kind === 'thinking' && !it.done
-      ? { kind: 'thinking', content: it.content, done: true }
-      : it
-  );
+  let open = false;
+  for (const it of items) {
+    if (it.kind === 'thinking' && !it.done) {
+      open = true;
+      break;
+    }
+  }
+  return open ? items.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it)) : items;
 }
 
 function applyMessageDelta(state: TurnState, ev: ServerEvent): TurnState {
   const items = settleThinking(state.items);
-  const last = items[items.length - 1];
   const text = String(ev.text);
-  const next: Item[] =
-    last && last.kind === 'assistant'
-      ? [...items.slice(0, -1), { kind: 'assistant', content: last.content + text }]
-      : [...items, { kind: 'assistant', content: text }];
+  const last = items[items.length - 1];
+  // One array copy per delta: this is the hot path of a streaming reply.
+  const next = items.slice();
+  if (last && last.kind === 'assistant') {
+    next[next.length - 1] = { kind: 'assistant', content: last.content + text };
+  } else {
+    next.push({ kind: 'assistant', content: text });
+  }
   return { ...state, streamed: true, items: next };
 }
 
@@ -63,18 +71,18 @@ function applyToolStart(state: TurnState, ev: ServerEvent): TurnState {
 }
 
 function applyToolResult(state: TurnState, ev: ServerEvent): TurnState {
-  return {
-    ...state,
-    items: state.items.map((it) =>
-      it.kind === 'tool' && it.id === String(ev.id)
-        ? {
-            ...it,
-            result: String(ev.result),
-            ...(typeof ev.diff === 'string' ? { diff: ev.diff } : {}),
-          }
-        : it
-    ),
+  const id = String(ev.id);
+  const i = state.items.findIndex((it) => it.kind === 'tool' && it.id === id);
+  // No matching card: the state keeps its identity, so nothing re-renders.
+  if (i === -1) return state;
+  const card = state.items[i] as Extract<Item, { kind: 'tool' }>;
+  const items = state.items.slice();
+  items[i] = {
+    ...card,
+    result: String(ev.result),
+    ...(typeof ev.diff === 'string' ? { diff: ev.diff } : {}),
   };
+  return { ...state, items };
 }
 
 /**
@@ -101,9 +109,20 @@ function applyMessageComplete(state: TurnState, ev: ServerEvent): TurnState {
   return withTokens(appendIfNotStreamed({ ...state, items: settleThinking(state.items) }, ev.content), ev.tokens);
 }
 
+/**
+ * Append the stop marker — once. Both abort() and a `message.stopped` event
+ * that arrives in the same window can reach the same turn, and a marker is
+ * already in the items after a reload.
+ */
+export function withStopped(state: TurnState): TurnState {
+  return state.items[state.items.length - 1]?.kind === 'stopped'
+    ? state
+    : { ...state, items: [...state.items, { kind: 'stopped' }] };
+}
+
 function applyMessageStopped(state: TurnState, ev: ServerEvent): TurnState {
   let s = appendIfNotStreamed({ ...state, items: settleThinking(state.items) }, ev.content);
-  s = { ...s, items: [...s.items, { kind: 'stopped' }] };
+  s = withStopped(s);
   return withTokens(s, ev.tokens);
 }
 
@@ -198,9 +217,11 @@ export function applyEvent(state: TurnState, ev: ServerEvent): TurnState {
 
 /**
  * A turn interrupted by stop/error never gets its compaction end event:
- * settle the running card so it doesn't pulse forever.
+ * settle the running card so it doesn't pulse forever. Returns the same state
+ * when there is nothing running.
  */
 export function settleCompaction(state: TurnState): TurnState {
+  if (!state.items.some((it) => it.kind === 'compaction' && it.status === 'running')) return state;
   return {
     ...state,
     items: state.items.map((it) =>

@@ -1,7 +1,10 @@
+import { memo } from 'react';
 import type { Project } from '../api';
 import { ProjectTabs } from './ProjectTabs';
 
-export function Header({
+/** Memoized: the header only cares about projects and the panel flags,
+ *  not about the chat streaming below it. */
+export const Header = memo(function Header({
   projects,
   activeProject,
   providersOpen,
@@ -62,4 +65,4 @@ export function Header({
       )}
     </header>
   );
-}
+});

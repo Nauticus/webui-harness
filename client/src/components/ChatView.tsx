@@ -1,16 +1,31 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Project, Skill } from '../api';
 import type { ContextUsage } from '../api';
-import type { Item } from '../lib/items';
+import { toRows, type ChatRow, type Item } from '../lib/items';
 import { ItemView } from './ItemView';
 import { Onboarding } from './Onboarding';
 
 const kfmt = (n: number) => `${Math.max(0, Math.round(n / 1000))}k`;
 
+/** The "the model is working" row: shown while a turn runs but nothing on
+ *  screen is visibly growing (see `toRows`). */
+function BusyRow() {
+  return (
+    <div>
+      <div className="flex w-fit items-center gap-1.5 rounded-2xl rounded-bl-md border border-slate-800 bg-slate-900 px-4 py-3.5">
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400 [animation-delay:150ms]" />
+        <span className="h-1.5 w-1.5 animate-bounce rounded-full bg-sky-400 [animation-delay:300ms]" />
+      </div>
+    </div>
+  );
+}
+
 export function ChatView({
   items,
   busy,
+  sessionId,
   onboarding,
   activeProject,
   hasActiveSession,
@@ -21,6 +36,8 @@ export function ChatView({
 }: {
   items: Item[];
   busy: boolean;
+  /** The session on screen; a change means "start at the latest item". */
+  sessionId: string | null;
   onboarding: boolean;
   activeProject: Project | null;
   hasActiveSession: boolean;
@@ -31,13 +48,24 @@ export function ChatView({
 }) {
   const parentRef = useRef<HTMLDivElement>(null);
   const [atEnd, setAtEnd] = useState(true);
-  const prevRef = useRef<{ len: number; last: Item | null }>({ len: 0, last: null });
+  /** Only re-render on a scroll that actually crosses the end boundary — a
+   *  setState per scroll event would undo directDomUpdates. */
+  const atEndRef = useRef(true);
+  /** The rows actually rendered: the items, plus the busy placeholder. */
+  const rows: ChatRow[] = useMemo(() => toRows(items, busy), [items, busy]);
+  /** Deltas always append to the last item, so that is the one rendering live
+   *  (see ItemView's `streaming`). When a placeholder row is appended it is
+   *  the last row instead, and no item is streaming. */
+  const streamingIndex = busy ? rows.length - 1 : -1;
+  const prevRef = useRef<{ items: Item[]; session: string | null }>({ items: [], session: null });
+  /** A session change whose items have not landed yet — jump when they do. */
+  const pendingJumpRef = useRef(true);
 
   // Windowed rendering: only items near the viewport are mounted. Chat is
   // end-anchored (short threads hug the bottom) and new items follow the
   // viewport only while the reader is already at the end.
   const virtualizer = useVirtualizer({
-    count: items.length,
+    count: rows.length,
     getScrollElement: () => parentRef.current,
     estimateSize: () => 84,
     overscan: 6,
@@ -45,27 +73,47 @@ export function ChatView({
     followOnAppend: true,
     scrollEndThreshold: 80,
     directDomUpdates: true,
-    onChange: (instance) => setAtEnd(instance.isAtEnd()),
+    onChange: (instance) => {
+      const end = instance.isAtEnd();
+      if (end === atEndRef.current) return;
+      atEndRef.current = end;
+      setAtEnd(end);
+    },
   });
 
   // Scroll contract:
-  // - opening a session starts at the latest message,
+  // - opening a session starts at its latest item,
   // - sending a message jumps to the latest,
   // - while pinned at the end, follow streaming growth and new items,
   // - while reading history, never yank the viewport.
   useEffect(() => {
     const prev = prevRef.current;
+    const switched = prev.session !== sessionId;
+    const changed = items !== prev.items;
+    prevRef.current = { items, session: sessionId };
+
+    // The route can move to a session before its items arrive: arm the jump
+    // on the switch and spend it on the first non-empty render of that
+    // session, instead of guessing a switch from item counts.
+    if (switched) pendingJumpRef.current = true;
+    if (!changed) return;
+
+    if (pendingJumpRef.current) {
+      if (items.length === 0) return; // nothing to anchor to yet
+      pendingJumpRef.current = false;
+      virtualizer.scrollToEnd();
+      return;
+    }
     const last = items[items.length - 1] ?? null;
-    const loadedHistory = prev.len === 0 && items.length > 0;
+    const prevLast = prev.items[prev.items.length - 1] ?? null;
     const sentMessage =
-      items.length > prev.len && last?.kind === 'user' && last !== prev.last;
-    if (loadedHistory || sentMessage) {
-      virtualizer.scrollToEnd(sentMessage && !loadedHistory ? { behavior: 'smooth' } : undefined);
+      items.length > prev.items.length && last?.kind === 'user' && last !== prevLast;
+    if (sentMessage) {
+      virtualizer.scrollToEnd({ behavior: 'smooth' });
     } else if (items.length > 0 && virtualizer.isAtEnd()) {
       virtualizer.scrollToEnd();
     }
-    prevRef.current = { len: items.length, last };
-  }, [items, virtualizer]);
+  }, [items, sessionId, virtualizer]);
 
   return (
     <div className="relative min-h-0 flex-1">
@@ -110,28 +158,34 @@ export function ChatView({
           ) : null)}
 
         <div ref={virtualizer.containerRef} className="relative w-full">
-          {virtualizer.getVirtualItems().map((vi) => (
-            <div
-              key={vi.key}
-              ref={virtualizer.measureElement}
-              data-index={vi.index}
-              className="px-5 py-2"
-              style={{ position: 'absolute', top: 0, left: 0, width: '100%' }}
-            >
-              <div className="mx-auto w-full max-w-3xl">
-                <ItemView
-                  item={items[vi.index]!}
-                  isLast={vi.index === items.length - 1}
-                  busy={busy}
-                  skills={skills}
-                />
+          {virtualizer.getVirtualItems().map((vi) => {
+            const row = rows[vi.index]!;
+            return (
+              <div
+                key={vi.key}
+                ref={virtualizer.measureElement}
+                data-index={vi.index}
+                className="px-5 py-2"
+                style={{ position: 'absolute', top: 0, left: 0, width: '100%' }}
+              >
+                <div className="mx-auto w-full max-w-3xl">
+                  {row.kind === 'busy' ? (
+                    <BusyRow />
+                  ) : (
+                    <ItemView
+                      item={row}
+                      skills={skills}
+                      streaming={vi.index === streamingIndex}
+                    />
+                  )}
+                </div>
               </div>
-            </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
-      {!atEnd && items.length > 0 && (
+      {!atEnd && rows.length > 0 && (
         <button
           onClick={() => virtualizer.scrollToEnd({ behavior: 'smooth' })}
           className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-slate-700 bg-slate-900/90 px-3.5 py-1.5 text-[11px] text-slate-300 shadow-lg backdrop-blur transition-colors hover:border-sky-500/50 hover:text-sky-300"

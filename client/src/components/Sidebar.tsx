@@ -1,6 +1,9 @@
+import { memo } from 'react';
 import type { Project, Session } from '../api';
 
-export function Sidebar({
+/** Memoized: the session list and the running marker change far less
+ *  often than the chat streams. */
+export const Sidebar = memo(function Sidebar({
   sessions,
   activeProject,
   activeSessionId,
@@ -15,7 +18,7 @@ export function Sidebar({
   runningSessionId: string | null;
   onNewSession: () => void;
   onSelect: (id: string) => void;
-  onRemove: (id: string) => void;
+  onRemove: (id: string, title: string) => void;
 }) {
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-slate-800 bg-slate-900/50">
@@ -58,7 +61,7 @@ export function Sidebar({
                   <span className="block truncate text-[10px] text-slate-600">{s.created_at}</span>
                 </button>
                 <button
-                  onClick={() => onRemove(s.id)}
+                  onClick={() => onRemove(s.id, s.title)}
                   title="Delete session"
                   className="absolute right-2 top-1/2 hidden h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-700 hover:text-rose-400 group-hover:flex"
                 >
@@ -71,4 +74,4 @@ export function Sidebar({
       </nav>
     </aside>
   );
-}
+});

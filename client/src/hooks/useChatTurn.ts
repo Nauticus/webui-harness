@@ -5,6 +5,11 @@ import type { TurnState } from '../lib/chatEvents';
 import { usePendingSelection } from './usePendingSelection';
 import { useTurnRunner } from './useTurnRunner';
 
+/** Stable patch callbacks: handing inline arrows to usePendingSelection would
+ *  make its `set` change identity on every render. */
+const patchModel = (id: string, v: string) => api.updateSessionModel(id, v);
+const patchEffort = (id: string, v: string) => api.updateSessionReasoningEffort(id, v);
+
 /**
  * The chat turn engine: display state (items, context, view switching)
  * composed from three parts — the turn lifecycle (useTurnRunner), the
@@ -34,6 +39,11 @@ export function useChatTurn(opts: {
   const viewSessionId = useRef<string | null>(null);
   const itemsRef = useRef<Item[]>([]);
   itemsRef.current = items;
+  /** Draft text per session ('' key = the not-yet-created session). A draft
+   *  typed in one chat stays in that chat instead of following the user. */
+  const draftsRef = useRef(new Map<string, string>());
+  const inputRef = useRef('');
+  inputRef.current = input;
 
   // Model and effort share one selection pattern: pending until the first
   // message creates the session, then a real session patch.
@@ -41,14 +51,14 @@ export function useChatTurn(opts: {
     opts.activeProjectId,
     opts.activeSessionId,
     opts.activeSessionModel,
-    (id, v) => api.updateSessionModel(id, v),
+    patchModel,
     opts.onSessionModelUpdated
   );
   const effort = usePendingSelection(
     opts.activeProjectId,
     opts.activeSessionId,
     opts.activeSessionEffort,
-    (id, v) => api.updateSessionReasoningEffort(id, v),
+    patchEffort,
     opts.onSessionEffortUpdated
   );
 
@@ -86,6 +96,11 @@ export function useChatTurn(opts: {
    *  loads from the server. The running turn is never aborted. */
   const viewSession = useCallback(
     async (sessionId: string | null) => {
+      const leaving = viewSessionId.current;
+      if (leaving !== sessionId) {
+        draftsRef.current.set(leaving ?? '', inputRef.current);
+        setInput(draftsRef.current.get(sessionId ?? '') ?? '');
+      }
       viewSessionId.current = sessionId;
       if (sessionId === null) {
         setItems([]);
@@ -98,12 +113,18 @@ export function useChatTurn(opts: {
         return;
       }
       const { context: serverContext, messages } = await api.getSession(sessionId);
-      // The route may have moved on while fetching; only apply if still shown.
-      if (viewSessionId.current === sessionId) {
-        setItems(rowsToItems(messages));
-        if (serverContext) contextBySessionRef.current.set(sessionId, serverContext);
-        setContext(serverContext ?? contextBySessionRef.current.get(sessionId) ?? null);
+      // The route may have moved on while fetching; and a turn may have
+      // started while fetching — in both cases the live state owns the screen,
+      // otherwise this snapshot would wipe the message that was just sent.
+      if (viewSessionId.current !== sessionId) return;
+      if (streamedSessionIdRef.current === sessionId) {
+        setItems(turnRef.current.items);
+        setContext(contextBySessionRef.current.get(sessionId) ?? null);
+        return;
       }
+      setItems(rowsToItems(messages));
+      if (serverContext) contextBySessionRef.current.set(sessionId, serverContext);
+      setContext(serverContext ?? contextBySessionRef.current.get(sessionId) ?? null);
     },
     [turnRef, streamedSessionIdRef]
   );
@@ -114,12 +135,18 @@ export function useChatTurn(opts: {
     streamedSessionIdRef.current = null;
   }, [streamedSessionIdRef]);
 
-  const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
-    if (e.key === 'Enter' && !e.shiftKey) {
-      e.preventDefault();
-      void turn.send();
-    }
-  };
+  const onKeyDown = useCallback(
+    (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (e.key === 'Enter' && !e.shiftKey) {
+        // While an IME composition is pending, Enter confirms the candidate —
+        // it must never submit the message.
+        if (e.nativeEvent.isComposing || e.keyCode === 229) return;
+        e.preventDefault();
+        void turn.send();
+      }
+    },
+    [turn.send]
+  );
 
   return {
     items,
