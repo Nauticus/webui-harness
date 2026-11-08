@@ -63,6 +63,7 @@ export const Sidebar = memo(function Sidebar({
                 <button
                   onClick={() => onRemove(s.id, s.title)}
                   title="Delete session"
+                  aria-label={`Delete session ${s.title}`}
                   className="absolute right-2 top-1/2 hidden h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-slate-500 transition-colors hover:bg-slate-700 hover:text-rose-400 group-hover:flex"
                 >
                   ×

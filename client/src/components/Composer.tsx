@@ -1,11 +1,7 @@
 import { memo, useEffect, useState, type KeyboardEvent } from 'react';
 import { Select } from '@base-ui-components/react/select';
 import type { ModelGroup, Skill } from '../api';
-
-/** 128000 -> '128k', 1000000 -> '1M'. */
-export function formatContextWindow(tokens: number): string {
-  return tokens >= 1_000_000 ? `${Math.round(tokens / 100_000) / 10}M` : `${Math.round(tokens / 1000)}k`;
-}
+import { fmtTokens } from '../lib/context';
 
 /**
  * Composer: full-width prompt input with a compact model-picker chip and a
@@ -225,7 +221,7 @@ export const Composer = memo(function Composer({
                   className="shrink-0 rounded-full border border-slate-700 px-1.5 text-[10px] text-slate-500"
                   title="Context window (tokens)"
                 >
-                  {formatContextWindow(currentGroup.contextWindow)}
+                  {fmtTokens(currentGroup.contextWindow)}
                 </span>
               )}
               <svg
@@ -271,7 +267,7 @@ export const Composer = memo(function Composer({
                         </span>
                         <span className="flex shrink-0 items-center gap-1.5">
                           {g.contextWindow !== undefined && (
-                            <span className="text-[10px] text-slate-500">{formatContextWindow(g.contextWindow)}</span>
+                            <span className="text-[10px] text-slate-500">{fmtTokens(g.contextWindow)}</span>
                           )}
                           <span className="hidden group-data-[selected]:inline">✓</span>
                         </span>

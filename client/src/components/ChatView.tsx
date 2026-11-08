@@ -2,11 +2,11 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Project, Skill } from '../api';
 import type { ContextUsage } from '../api';
+import { contextUsage } from '../lib/context';
 import { toRows, rowKey, type ChatRow, type Item } from '../lib/items';
 import { ItemView } from './ItemView';
 import { Onboarding } from './Onboarding';
 
-const kfmt = (n: number) => `${Math.max(0, Math.round(n / 1000))}k`;
 
 /** The "the model is working" row: shown while a turn runs but nothing on
  *  screen is visibly growing (see `toRows`). */
@@ -53,6 +53,8 @@ export function ChatView({
   const atEndRef = useRef(true);
   /** The rows actually rendered: the items, plus the busy placeholder. */
   const rows: ChatRow[] = useMemo(() => toRows(items, busy), [items, busy]);
+  /** One readout drives the chip's label, tooltip and colour. */
+  const usage = context ? contextUsage(context) : null;
   /** Deltas always append to the last item, so that is the one rendering live
    *  (see ItemView's `streaming`). When a placeholder row is appended it is
    *  the last row instead, and no item is streaming. */
@@ -123,7 +125,17 @@ export function ChatView({
 
   return (
     <div className="relative min-h-0 flex-1">
-      <div ref={parentRef} className="h-full overflow-y-auto">
+      <div
+        ref={parentRef}
+        className="h-full overflow-y-auto"
+        // A log, not a chat console: polite, so new items are announced — but
+        // muted while a turn streams, because announcing every token would bury
+        // everything else.
+        role="log"
+        aria-label="Conversation"
+        aria-live={busy ? 'off' : 'polite'}
+        aria-busy={busy}
+      >
         {loadError && (
           <div className="px-5 pt-4">
             <div className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-2 text-sm text-rose-300">
@@ -194,18 +206,27 @@ export function ChatView({
       {!atEnd && rows.length > 0 && (
         <button
           onClick={() => virtualizer.scrollToEnd({ behavior: 'smooth' })}
+          aria-label="Jump to the latest message"
           className="absolute bottom-4 left-1/2 -translate-x-1/2 rounded-full border border-slate-700 bg-slate-900/90 px-3.5 py-1.5 text-[11px] text-slate-300 shadow-lg backdrop-blur transition-colors hover:border-sky-500/50 hover:text-sky-300"
         >
           ↓ latest
         </button>
       )}
 
-      {context && context.window > 0 && (
+      {/* The log is muted while streaming, so say the state out loud here. */}
+      <div className="sr-only" role="status">
+        {busy ? 'Assistant is responding' : ''}
+      </div>
+
+      {usage?.visible && (
         <div
-          className="pointer-events-none absolute bottom-4 right-4 select-none rounded-full border border-slate-800 bg-slate-900/90 px-2.5 py-1 text-[11px] tabular-nums text-slate-400 shadow-lg backdrop-blur"
-          title={`context: ${Math.round((context.tokens / context.window) * 100)}% used (${context.tokens.toLocaleString()} / ${context.window.toLocaleString()} tokens)`}
+          data-testid="context-chip"
+          className={`pointer-events-none absolute bottom-4 right-4 select-none rounded-full border bg-slate-900/90 px-2.5 py-1 text-[11px] tabular-nums shadow-lg backdrop-blur ${
+            usage.armed ? 'border-amber-500/40 text-amber-300' : 'border-slate-800 text-slate-400'
+          }`}
+          title={usage.title}
         >
-          {kfmt(context.tokens)}/{kfmt(context.window)}
+          {usage.label}
         </div>
       )}
     </div>

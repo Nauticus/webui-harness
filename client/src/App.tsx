@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigate, useRouterState } from '@tanstack/react-router';
-import { api, type ModelGroup } from './api';
+import { api, type ContextUsage, type ModelGroup } from './api';
+import { contextUsage } from './lib/context';
 import { useProjects } from './hooks/useProjects';
 import { useSessions } from './hooks/useSessions';
 import { useProviders } from './hooks/useProviders';
@@ -17,19 +18,12 @@ import { ProvidersPanel } from './components/dialogs/ProvidersPanel';
  *  and defeat the memoized composer. */
 const NO_GROUPS: ModelGroup[] = [];
 
-/** Full-width context-usage bar, sitting on the border between the chat
- * and the composer. Amber when compaction is armed, red at the wall.
- * `threshold` is a token count (the server's compaction trigger), not a
- * percentage — comparing it against the percentage made it unreachable. */
-function ContextBar({ tokens, window, threshold }: { tokens: number; window: number; threshold: number }) {
-  const pct = Math.max(0, Math.min(100, (tokens / window) * 100));
-  const armed = tokens >= threshold;
-  const tone = pct >= 100 ? 'bg-red-500' : armed ? 'bg-amber-500' : 'bg-indigo-500';
+/** Full-width context-usage bar, sitting on the border between the chat and
+ * the composer. All the deciding happens in lib/context. */
+function ContextBar(props: ContextUsage) {
+  const { pct, tone, title } = contextUsage(props);
   return (
-    <div
-      className="relative h-[3px] w-full shrink-0 bg-neutral-800/70"
-      title={`context ${pct.toFixed(0)}% used (${Math.round(tokens / 1000)}k / ${Math.round(window / 1000)}k tokens${armed ? ' — compaction armed' : ''})`}
-    >
+    <div data-testid="context-bar" className="relative h-[3px] w-full shrink-0 bg-neutral-800/70" title={title}>
       <div className={`h-full transition-[width] duration-300 ${tone}`} style={{ width: `${pct}%` }} />
     </div>
   );

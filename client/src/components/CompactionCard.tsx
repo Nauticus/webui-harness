@@ -1,7 +1,7 @@
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import type { Item } from '../lib/items';
-import { formatContextWindow } from './Composer';
+import { fmtTokens } from '../lib/context';
 
 type CompactionItem = Extract<Item, { kind: 'compaction' }>;
 
@@ -20,7 +20,7 @@ export function CompactionCard({ item }: { item: CompactionItem }) {
         compacting context
         {typeof item.tokensOut === 'number' && (
           <span className="normal-case tabular-nums tracking-normal text-indigo-300/50">
-            · ~{formatContextWindow(item.tokensOut)} tokens written
+            · ~{fmtTokens(item.tokensOut)} tokens written
           </span>
         )}
       </div>
@@ -40,7 +40,7 @@ export function CompactionCard({ item }: { item: CompactionItem }) {
 
   const range =
     typeof item.tokensBefore === 'number' && typeof item.tokensAfter === 'number'
-      ? `· ${formatContextWindow(item.tokensBefore)} → ${formatContextWindow(item.tokensAfter)}`
+      ? `· ${fmtTokens(item.tokensBefore)} → ${fmtTokens(item.tokensAfter)}`
       : '';
 
   return (

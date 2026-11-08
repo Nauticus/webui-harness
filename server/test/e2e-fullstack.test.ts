@@ -212,13 +212,15 @@ test('full stack: UI turn and compaction through the browser', { timeout: 180_00
     // Final assistant text.
     await p.getByText('done: mock replied').waitFor({ timeout: 30_000 });
 
-    // The context-usage bar is present (title: "context N% used (…)").
-    // The chat also has a floating chip titled "context: …" — the space after
-    // "context" distinguishes the bar.
-    const bar = p.locator('div[title^="context "]');
+    // The context-usage bar is present, and its tooltip carries the exact
+    // numbers (both readouts come from lib/context, so they cannot drift).
+    const bar = p.locator('[data-testid="context-bar"]');
     await bar.waitFor({ timeout: 30_000 });
     const title = (await bar.getAttribute('title')) ?? '';
-    assert.ok(title.includes('/ 5k tokens'), `bar should show the per-model window, got: ${title}`);
+    assert.ok(title.includes('/ 5,000 tokens'), `bar should show the per-model window, got: ${title}`);
+    // The chip in the corner agrees with it.
+    const chip = p.locator('[data-testid="context-chip"]');
+    assert.ok(((await chip.getAttribute('title')) ?? '').includes('/ 5,000 tokens'), 'chip tooltip matches');
   });
 
   await t.test('large message triggers the compaction card in the chat', async () => {
