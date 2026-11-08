@@ -35,9 +35,13 @@ function settleThinking(items: Item[]): Item[] {
   return open ? items.map((it) => (it.kind === 'thinking' && !it.done ? { ...it, done: true } : it)) : items;
 }
 
+/** Text from an event, without `String(undefined)` writing "undefined" into a
+ *  reply: a malformed event should add nothing, not a phantom word. */
+const textOf = (v: unknown): string => (typeof v === 'string' ? v : '');
+
 function applyMessageDelta(state: TurnState, ev: ServerEvent): TurnState {
   const items = settleThinking(state.items);
-  const text = String(ev.text);
+  const text = textOf(ev.text);
   const last = items[items.length - 1];
   // One array copy per delta: this is the hot path of a streaming reply.
   const next = items.slice();
@@ -53,9 +57,9 @@ function applyThinkingDelta(state: TurnState, ev: ServerEvent): TurnState {
   const items = [...state.items];
   const last = items[items.length - 1];
   if (last && last.kind === 'thinking' && !last.done) {
-    items[items.length - 1] = { kind: 'thinking', content: last.content + String(ev.text), done: false };
+    items[items.length - 1] = { kind: 'thinking', content: last.content + textOf(ev.text), done: false };
   } else {
-    items.push({ kind: 'thinking', content: String(ev.text), done: false });
+    items.push({ kind: 'thinking', content: textOf(ev.text), done: false });
   }
   return { ...state, items };
 }

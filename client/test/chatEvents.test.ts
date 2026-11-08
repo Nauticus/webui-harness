@@ -132,3 +132,10 @@ test('settleCompaction: settles running cards (interrupted turn)', () => {
   );
   assert.deepEqual(s.items, [{ kind: 'compaction', status: 'done', tokensBefore: 100 }]);
 });
+
+test('a delta with no text adds nothing rather than "undefined"', () => {
+  const s = applyEvent(st({ items: [assistant('hi')] }), ev({ type: 'message.delta' } as never));
+  assert.deepEqual(s.items, [assistant('hi')]);
+  const t = applyEvent(st({ items: [{ kind: 'thinking', content: 'th', done: false }] }), ev({ type: 'thinking.delta' } as never));
+  assert.deepEqual(t.items, [{ kind: 'thinking', content: 'th', done: false }]);
+});
