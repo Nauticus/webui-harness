@@ -1,5 +1,4 @@
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import { Streamdown } from 'streamdown';
 import type { Item } from '../lib/items';
 import { fmtTokens } from '../lib/context';
 import { onToggle, usePanelOpen } from '../lib/panelState';
@@ -65,7 +64,7 @@ export function CompactionCard({
       </summary>
       <div className="mx-2 mb-1 mt-2 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
         <div className="prose prose-sm prose-invert max-w-none break-words px-4 py-3 !text-slate-300 [&_code]:rounded [&_code]:bg-slate-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-sky-300 [&_pre]:bg-slate-950 [&_pre]:text-slate-300 [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-slate-700 [&_td]:border [&_td]:border-slate-700 [&_tr:nth-child(even)_td]:bg-slate-800/40">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{item.summary}</ReactMarkdown>
+          <Streamdown mode="static">{item.summary}</Streamdown>
         </div>
       </div>
     </details>

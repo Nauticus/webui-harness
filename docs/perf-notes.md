@@ -49,10 +49,11 @@ Realistic cadence (400 deltas, one every 4ms) before → after:
 
 ## What the client does now
 
-- `ItemView` renders an item's text as **plain wrapped text while it is still
-  streaming** and parses markdown once, when the item settles (`streaming` prop,
-  derived in `ChatView` from "the last row while this session is busy"). Side
-  benefit: no half-rendered code fence or dangling `**` mid-stream.
+- Assistant text is rendered by **Streamdown** in streaming mode: it splits the
+  reply into top-level blocks, memoizes the finished ones, and re-renders only
+  the block still being written, so formatting is live while the text arrives.
+  See "Markdown rendering" below for what that costs and why the mode never
+  switches.
 - `ItemView`, `Sidebar`, `Header`, `Composer` are memoized, and the callbacks
   they receive are stable (`useCallback` on the stable leaf functions, not on
   the whole `chat`/`sessions` objects, which are new every render).
@@ -65,6 +66,51 @@ Realistic cadence (400 deltas, one every 4ms) before → after:
 - `busy` reaching the transcript is session-scoped (`busyHere` in `App`): a
   turn running in another session can no longer put a placeholder row, or
   live-render markup, onto the session on screen.
+
+## Markdown rendering (streamdown)
+
+Markdown used to be rendered by `react-markdown`, and only once an item settled:
+re-parsing the whole growing reply per commit is quadratic, and it was the
+single biggest client cost. `streamdown` is built for text that arrives in
+pieces, so it is now the renderer and formatting is live.
+
+Measured on the same stream — 3000 deltas, ~185 KB of markdown (headings,
+paragraphs, lists, code fences), 4 ms apart, real client, real SSE:
+
+| | react-markdown, parse at settle | streamdown, streaming mode | streamdown, switching to static at settle |
+|---|---|---|---|
+| long tasks | 2 | **2** | 5 |
+| long-task time | 849 ms | **100 ms** | 1230 ms |
+| longest task | 709 ms | **50 ms** | 899 ms |
+| frames showing formatting | 1 (at the end) | **81 of 81** | 81 of 81 |
+| history open (same reply) | **884 ms** | 1357 ms | — |
+
+Two findings worth keeping:
+
+- **Do not switch mode when an item settles.** Going from `streaming` to
+  `static` discards the block list and remounts every block in one commit — a
+  899 ms task at the exact moment a reply finishes. Staying in streaming mode
+  makes that 50 ms. The cost moves to opening long old history instead
+  (+470 ms on 185 KB, because each block is its own memoized render), which is
+  the better place to pay it.
+- **A react-markdown call has a ~0.13–0.3 ms fixed cost**, so anything that
+  calls a React markdown renderer per token pays 3000 × that regardless of text
+  size. Block memoization only wins once the blocks are big enough for the
+  saving to beat that floor — for short replies, naive live formatting is
+  cheaper than splitting.
+
+Cost of the swap: the main chunk goes from 785 KB to 1225 KB raw (232 KB to
+354 KB gzipped), because streamdown brings `marked`, `unified`, and three
+rehype plugins. Shiki is not among it: the `code` override keeps tree-sitter,
+so no shiki bundle is fetched.
+
+One behaviour change to know about: streamdown runs raw HTML in markdown
+through `rehype-raw` and then sanitizes it, where react-markdown escaped it as
+text. Checked against a hostile sample — `<script>`, `<img onerror>`,
+`onclick=`, and a `javascript:` link all produce nothing, no `<img>` element at
+all, no dialog, no page error — but HTML in model output now renders as markup
+rather than as literal text. `literalTagContent` on the `Streamdown` call
+restores the old behaviour in one line if that is ever preferred.
 
 ## Syntax highlighting (tree-sitter)
 
