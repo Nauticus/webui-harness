@@ -139,10 +139,21 @@ const MAX_EDIT_FILE_BYTES = 1_500_000; // ~1.5MB: beyond this, diffs are not wor
 const truncate = (s: string) =>
   s.length > MAX_OUTPUT ? `${s.slice(0, MAX_OUTPUT)}\n...[truncated ${s.length - MAX_OUTPUT} chars]` : s;
 
-/** Tool outcome: `output` goes to the LLM, `diff` (unified) is shown in the UI + stored in history. */
+/**
+ * Tool outcome: `output` goes to the LLM, `diff` (unified) is shown in the UI +
+ * stored in history. `ok: false` marks a failure — the UI must not have to
+ * guess it from the wording of `output` (it used to sniff `startsWith('error')`,
+ * which broke the moment a message said anything else).
+ */
 export interface ToolResult {
   output: string;
+  ok?: boolean;
   diff?: string;
+}
+
+/** One place that builds a failure, so `ok` can never be forgotten. */
+function fail(message: string): ToolResult {
+  return { output: `error: ${message}`, ok: false };
 }
 
 interface Edit {
@@ -227,7 +238,7 @@ function runBash(
   timeoutSec: number,
   workspace: string,
   signal?: AbortSignal
-): Promise<string> {
+): Promise<{ text: string; failed: boolean }> {
   return new Promise((resolve) => {
     const child = spawn('bash', ['-c', command], {
       cwd: workspace,
@@ -236,28 +247,32 @@ function runBash(
     let out = '';
     let done = false;
     let timer: NodeJS.Timeout | undefined;
-    const finish = (suffix?: string) => {
+    const finish = (suffix?: string, failed = false) => {
       if (done) return;
       done = true;
       if (timer) clearTimeout(timer);
       signal?.removeEventListener('abort', onAbort);
       const text = suffix ? `${out ? out + '\n' : ''}${suffix}` : out || '(no output)';
-      resolve(truncate(text));
+      resolve({ text: truncate(text), failed });
     };
     const onAbort = () => {
       child.kill('SIGKILL');
-      finish('[stopped by user]');
+      finish('[stopped by user]', true);
     };
     timer = setTimeout(() => {
       child.kill('SIGKILL');
-      finish(`[timed out after ${timeoutSec}s]`);
+      finish(`[timed out after ${timeoutSec}s]`, true);
     }, Math.min(timeoutSec, 120) * 1000);
     if (signal?.aborted) onAbort();
     else signal?.addEventListener('abort', onAbort, { once: true });
     child.stdout.on('data', (d) => (out += d.toString()));
     child.stderr.on('data', (d) => (out += d.toString()));
-    child.on('close', () => finish());
-    child.on('error', (err) => finish(`bash error: ${String(err)}`));
+    // The exit code used to be dropped, so a failing command looked exactly
+    // like a silent success (`false`, `grep` with no match). Report it.
+    child.on('close', (code) =>
+      finish(code ? `${out}${out ? '\n' : ''}[exit code ${code}]` : undefined, code !== 0)
+    );
+    child.on('error', (err) => finish(`bash error: ${String(err)}`, true));
   });
 }
 
@@ -274,9 +289,10 @@ export async function runTool(
     switch (name) {
       case 'bash': {
         const command = String(args.command ?? '');
-        if (!command.trim()) return { output: 'error: empty command' };
+        if (!command.trim()) return fail('empty command');
         const timeout = Number.isFinite(Number(args.timeout)) ? Number(args.timeout) : 30;
-        return { output: await runBash(command, timeout, workspace, signal) };
+        const run = await runBash(command, timeout, workspace, signal);
+        return run.failed ? { output: run.text, ok: false } : { output: run.text };
       }
       case 'read_file': {
         const abs = safePath(workspace, String(args.path ?? ''), extraReadRoots);
@@ -300,7 +316,7 @@ export async function runTool(
           before = undefined; // new file
         }
         if (before !== undefined && before.includes('\u0000')) {
-          return { output: `error: ${rel} looks binary; refusing to overwrite it` };
+          return fail(`${rel} looks binary; refusing to overwrite it`);
         }
         await fs.mkdir(path.dirname(abs), { recursive: true });
         await atomicWrite(abs, content);
@@ -321,7 +337,7 @@ export async function runTool(
         const abs = safePath(workspace, String(args.path ?? ''));
         const rel = path.relative(workspace, abs);
         const rawEdits = Array.isArray(args.edits) ? (args.edits as object[]) : [];
-        if (rawEdits.length === 0) return { output: 'error: edits must contain at least one replacement' };
+        if (rawEdits.length === 0) return fail('edits must contain at least one replacement');
         const edits: Edit[] = rawEdits.map((e) => ({
           oldText: String((e as { oldText?: unknown }).oldText ?? ''),
           newText: String((e as { newText?: unknown }).newText ?? ''),
@@ -329,23 +345,23 @@ export async function runTool(
         }));
         for (let i = 0; i < edits.length; i++) {
           if (edits[i]!.oldText === '') {
-            return { output: `error: edit ${i + 1}: oldText must be non-empty` };
+            return fail(`edit ${i + 1}: oldText must be non-empty`);
           }
         }
         let before: string;
         try {
           before = await fs.readFile(abs, 'utf8');
         } catch {
-          return { output: `error: ${rel} does not exist — use write_file to create it` };
+          return fail(`${rel} does not exist — use write_file to create it`);
         }
         if (before.includes('\u0000')) {
-          return { output: `error: ${rel} looks binary; refusing to edit it` };
+          return fail(`${rel} looks binary; refusing to edit it`);
         }
         if (before.length > MAX_EDIT_FILE_BYTES) {
-          return { output: `error: ${rel} is too large to edit (${before.length} bytes)` };
+          return fail(`${rel} is too large to edit (${before.length} bytes)`);
         }
         const applied = applyEdits(before, edits);
-        if ('error' in applied) return { output: `error: ${applied.error}` };
+        if ('error' in applied) return fail(applied.error);
         if (applied.next === before) {
           return { output: `no change: every edit replaced text with identical text` };
         }
@@ -365,9 +381,9 @@ export async function runTool(
         };
       }
       default:
-        return { output: `unknown tool: ${name}` };
+        return fail(`unknown tool: ${name}`);
     }
   } catch (err) {
-    return { output: `error: ${String(err instanceof Error ? err.message : err)}` };
+    return fail(String(err instanceof Error ? err.message : err));
   }
 }

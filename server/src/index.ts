@@ -422,7 +422,7 @@ app.get('/api/sessions/:id', async (req, reply) => {
  *   message.delta  -> text chunks of the assistant reply
  *   tool.round     -> assistant text + tool calls for this LLM step (+ reasoning)
  *   tool.start     -> a tool invocation begins (name + args)
- *   tool.result    -> tool finished (truncated output)
+ *   tool.result    -> tool finished (truncated output, ok: false on failure)
  *   message.complete / error -> terminal events (complete carries reasoning)
  *   done           -> final event, stream closes
  */
@@ -634,6 +634,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
               tool_call_id: ev.id,
               name: ev.name,
               args: start?.args,
+              ...(ev.ok === false ? { ok: false } : {}),
               ...(ev.diff ? { diff: ev.diff } : {}),
             },
           });

@@ -80,10 +80,16 @@ export const ItemView = memo(function ItemView({
       // the context — render it as a skill card, not a generic file read.
       if (item.name === 'read_file' && isSkillFile(toolTarget(item.name, item.args))) {
         return (
-          <SkillCard name={item.name} args={item.args} result={item.result} skill={matchSkill(item.name, item.args, skills)} />
+          <SkillCard
+            name={item.name}
+            args={item.args}
+            result={item.result}
+            ok={item.ok}
+            skill={matchSkill(item.name, item.args, skills)}
+          />
         );
       }
-      return <ToolCard name={item.name} args={item.args} result={item.result} diff={item.diff} />;
+      return <ToolCard name={item.name} args={item.args} result={item.result} ok={item.ok} diff={item.diff} />;
     }
     case 'compaction':
       return <CompactionCard item={item} />;

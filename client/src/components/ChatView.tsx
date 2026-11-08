@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useVirtualizer } from '@tanstack/react-virtual';
 import type { Project, Skill } from '../api';
 import type { ContextUsage } from '../api';
-import { toRows, type ChatRow, type Item } from '../lib/items';
+import { toRows, rowKey, type ChatRow, type Item } from '../lib/items';
 import { ItemView } from './ItemView';
 import { Onboarding } from './Onboarding';
 
@@ -73,6 +73,7 @@ export function ChatView({
     followOnAppend: true,
     scrollEndThreshold: 80,
     directDomUpdates: true,
+    getItemKey: (index) => rowKey(rows[index]!, index),
     onChange: (instance) => {
       const end = instance.isAtEnd();
       if (end === atEndRef.current) return;
@@ -95,7 +96,12 @@ export function ChatView({
     // The route can move to a session before its items arrive: arm the jump
     // on the switch and spend it on the first non-empty render of that
     // session, instead of guessing a switch from item counts.
-    if (switched) pendingJumpRef.current = true;
+    if (switched) {
+      pendingJumpRef.current = true;
+      // A different transcript is a different set of rows: drop the measured
+      // heights of the previous one instead of laying the new rows over them.
+      virtualizer.measure();
+    }
     if (!changed) return;
 
     if (pendingJumpRef.current) {

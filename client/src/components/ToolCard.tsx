@@ -1,4 +1,4 @@
-import { toolTarget } from '../lib/items';
+import { toolFailed, toolTarget } from '../lib/items';
 import { DiffView } from './DiffView';
 
 function StatusChip({ isError }: { isError: boolean }) {
@@ -27,14 +27,17 @@ export function ToolCard({
   name,
   args,
   result,
+  ok,
   diff,
 }: {
   name: string;
   args?: unknown;
   result?: string;
+  /** Explicit outcome from the server; older history falls back to the text. */
+  ok?: boolean;
   diff?: string;
 }) {
-  const isError = result !== undefined && result.startsWith('error');
+  const isError = toolFailed({ result, ok });
   const target = toolTarget(name, args);
   const argsBlock =
     args !== undefined ? (

@@ -40,7 +40,7 @@ export type AgentEvent =
   | { type: 'thinking.delta'; text: string }
   | { type: 'tool.round'; content: string; toolCalls: StoredToolCall[]; reasoning?: string; usage?: UsageInfo }
   | { type: 'tool.start'; id: string; name: string; args: unknown }
-  | { type: 'tool.result'; id: string; name: string; result: string; diff?: string }
+  | { type: 'tool.result'; id: string; name: string; result: string; ok?: boolean; diff?: string }
   /**
    * Current context size for the UI, emitted before every LLM call
    * (so it updates as tool results accumulate, and right after compaction).
@@ -421,6 +421,7 @@ export async function* runAgentTurn(opts: {
           id: call.id,
           name: call.function.name,
           result: result.output,
+          ...(result.ok === false ? { ok: false } : {}),
           ...(result.diff ? { diff: result.diff } : {}),
         };
         conversation.push({

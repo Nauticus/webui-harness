@@ -1,5 +1,5 @@
 import type { Skill } from '../api';
-import { isSkillFile, skillDirName, toolTarget } from '../lib/items';
+import { isSkillFile, skillDirName, toolFailed, toolTarget } from '../lib/items';
 
 /** Strip leading YAML frontmatter for display (the model parsed it). */
 function bodyWithoutFrontmatter(text: string): string {
@@ -15,17 +15,20 @@ export function SkillCard({
   name,
   args,
   result,
+  ok,
   skill,
 }: {
   name: string;
   args?: unknown;
   result?: string;
+  /** Explicit outcome from the server; older history falls back to the text. */
+  ok?: boolean;
   skill?: Skill;
 }) {
   const target = toolTarget(name, args);
   const dirName = skillDirName(target);
   const display = skill?.name ?? dirName;
-  const isError = result !== undefined && result.startsWith('error');
+  const isError = toolFailed({ result, ok });
 
   return (
     <div className="w-full max-w-[85%]">

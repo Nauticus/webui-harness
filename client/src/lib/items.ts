@@ -5,7 +5,7 @@ export type Item =
   | { kind: 'user'; content: string }
   | { kind: 'assistant'; content: string }
   | { kind: 'thinking'; content: string; done: boolean }
-  | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; diff?: string }
+  | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; ok?: boolean; diff?: string }
   | { kind: 'error'; message: string }
   | {
       kind: 'compaction';
@@ -57,16 +57,30 @@ export function toRows(items: Item[], busy: boolean): ChatRow[] {
   return isAwaitingModel(items, busy) ? [...items, { kind: 'busy' }] : items;
 }
 
+/**
+ * Stable key for a rendered row. Tool rows key on the tool-call id, which is
+ * the same string live and after a reload (see `rowsToItems`), so a card keeps
+ * its identity — and its measured height — across a session reopen. Everything
+ * else is positional: items are append-only within a session.
+ */
+export function rowKey(row: ChatRow, index: number): string {
+  if (row.kind === 'busy') return 'busy';
+  if (row.kind === 'tool') return `tool:${row.id}`;
+  return `${row.kind}:${index}`;
+}
+
 export function rowsToItems(rows: MessageRow[]): Item[] {
   const items: Item[] = [];
   for (const r of rows) {
     let meta: {
       tool_calls?: unknown[];
+      tool_call_id?: string;
       name?: string;
       args?: unknown;
       reasoning?: string;
       diff?: string;
       stopped?: boolean;
+      ok?: boolean;
       tokensBefore?: number;
       tokensAfter?: number;
     } = {};
@@ -95,10 +109,13 @@ export function rowsToItems(rows: MessageRow[]): Item[] {
     } else if (r.role === 'tool') {
       items.push({
         kind: 'tool',
-        id: String(r.id),
+        // The tool-call id, not the database row id: it is what the live
+        // stream uses, so a card keeps the same identity after a reopen.
+        id: meta.tool_call_id ?? String(r.id),
         name: meta.name ?? 'tool',
         args: meta.args,
         result: r.content,
+        ...(meta.ok === false ? { ok: false } : {}),
         ...(meta.diff ? { diff: meta.diff } : {}),
       });
     }
@@ -113,6 +130,17 @@ export const TOOL_ICONS: Record<string, string> = {
   edit_file: '🪄',
   list_dir: '📁',
 };
+
+/**
+ * Did this tool call fail? New records say so explicitly (`ok: false`). Rows
+ * written before that flag existed fall back to the old convention — every
+ * server failure used to start its output with "error:" — so old history is
+ * still painted honestly.
+ */
+export function toolFailed(item: { result?: string; ok?: boolean }): boolean {
+  if (item.result === undefined) return false;
+  return item.ok === undefined ? item.result.startsWith('error') : !item.ok;
+}
 
 export function formatArgs(args: unknown): string {
   const s = JSON.stringify(args);

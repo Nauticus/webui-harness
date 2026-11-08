@@ -80,6 +80,7 @@ function applyToolResult(state: TurnState, ev: ServerEvent): TurnState {
   items[i] = {
     ...card,
     result: String(ev.result),
+    ...(ev.ok === false ? { ok: false } : {}),
     ...(typeof ev.diff === 'string' ? { diff: ev.diff } : {}),
   };
   return { ...state, items };

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { isAwaitingModel, toRows, type ChatRow, type Item } from '../src/lib/items';
+import { isAwaitingModel, rowKey, toRows, type ChatRow, type Item } from '../src/lib/items';
 
 const user: Item = { kind: 'user', content: 'hi' };
 const assistant = (content = 'x'): Item => ({ kind: 'assistant', content });
@@ -38,4 +38,11 @@ test('toRows appends the placeholder as an extra row, leaving items alone', () =
   const items = [user, tool(true)];
   assert.deepEqual(toRows(items, true), [...items, busyRow]);
   assert.deepEqual(items, [user, tool(true)]); // not mutated
+});
+
+test('row keys: tools key on their call id, everything else on position', () => {
+  assert.equal(rowKey({ kind: 'busy' }, 3), 'busy');
+  assert.equal(rowKey({ kind: 'tool', id: 'c1', name: 'bash' }, 3), 'tool:c1');
+  assert.equal(rowKey({ kind: 'user', content: 'hi' }, 3), 'user:3');
+  assert.equal(rowKey({ kind: 'assistant', content: 'x' }, 3), 'assistant:3');
 });
