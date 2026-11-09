@@ -1,7 +1,7 @@
 import OpenAI from 'openai';
 import { APIUserAbortError } from 'openai';
 import type { ChatCompletionMessageParam } from 'openai/resources/chat/completions';
-import { TOOLS, runTool } from './tools';
+import { TOOLS, runTool, type ShellName } from './tools';
 import { providerClient, type ProviderCreds } from './providers';
 import { effortExtraParams } from './reasoning';
 import { type Skill } from './skills';
@@ -40,7 +40,7 @@ export type AgentEvent =
   | { type: 'thinking.delta'; text: string }
   | { type: 'tool.round'; content: string; toolCalls: StoredToolCall[]; reasoning?: string; usage?: UsageInfo }
   | { type: 'tool.start'; id: string; name: string; args: unknown }
-  | { type: 'tool.result'; id: string; name: string; result: string; ok?: boolean; diff?: string }
+  | { type: 'tool.result'; id: string; name: string; result: string; ok?: boolean; diff?: string; shell?: ShellName }
   /**
    * Current context size for the UI, emitted before every LLM call
    * (so it updates as tool results accumulate, and right after compaction).
@@ -423,6 +423,7 @@ export async function* runAgentTurn(opts: {
           result: result.output,
           ...(result.ok === false ? { ok: false } : {}),
           ...(result.diff ? { diff: result.diff } : {}),
+          ...(result.shell ? { shell: result.shell } : {}),
         };
         conversation.push({
           role: 'tool',

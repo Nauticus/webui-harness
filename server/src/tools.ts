@@ -33,13 +33,51 @@ export interface ToolSpec {
   };
 }
 
+export type ShellName = 'bash' | 'powershell';
+
+export interface Shell {
+  name: ShellName;
+  file: string;
+  argv: string[];
+  /** How the tool description names it to the model. */
+  blurb: string;
+}
+
+/**
+ * The shell a command runs in.
+ *
+ * Decided from the platform, in one place, because three things have to agree
+ * on the answer: the syntax the model writes (the tool description names the
+ * shell), the process that actually executes it, and the grammar the client
+ * colours the command line with. Guessing per-call — or assuming bash everywhere
+ * — is what makes a Windows host either run the wrong language or render a right
+ * one as the wrong one.
+ *
+ * `-NoProfile` keeps a user's profile script from printing into the output and
+ * from slowing every call down; `-NonInteractive` makes a prompt a failure
+ * rather than a hang until the timeout.
+ */
+export function shellFor(platform: NodeJS.Platform = process.platform): Shell {
+  return platform === 'win32'
+    ? {
+        name: 'powershell',
+        file: 'powershell.exe',
+        argv: ['-NoProfile', '-NonInteractive', '-Command'],
+        blurb: 'powershell -Command',
+      }
+    : { name: 'bash', file: 'bash', argv: ['-c'], blurb: 'bash -c' };
+}
+
+/** This machine's shell, resolved once at module load. */
+export const SHELL = shellFor();
+
 export const TOOLS: ToolSpec[] = [
   {
     type: 'function',
     function: {
       name: 'bash',
       description:
-        'Run a shell command in the workspace sandbox (bash -c). Output is truncated to 12000 chars.',
+        `Run a shell command in the workspace sandbox (${SHELL.blurb}). Output is truncated to 12000 chars.`,
       parameters: {
         type: 'object',
         properties: {
@@ -149,6 +187,8 @@ export interface ToolResult {
   output: string;
   ok?: boolean;
   diff?: string;
+  /** Which shell actually ran a `bash` call, so the UI can read it correctly. */
+  shell?: ShellName;
 }
 
 /** One place that builds a failure, so `ok` can never be forgotten. */
@@ -240,7 +280,7 @@ function runBash(
   signal?: AbortSignal
 ): Promise<{ text: string; failed: boolean }> {
   return new Promise((resolve) => {
-    const child = spawn('bash', ['-c', command], {
+    const child = spawn(SHELL.file, [...SHELL.argv, command], {
       cwd: workspace,
       env: { ...process.env },
     });
@@ -272,7 +312,7 @@ function runBash(
     child.on('close', (code) =>
       finish(code ? `${out}${out ? '\n' : ''}[exit code ${code}]` : undefined, code !== 0)
     );
-    child.on('error', (err) => finish(`bash error: ${String(err)}`, true));
+    child.on('error', (err) => finish(`${SHELL.name} error: ${String(err)}`, true));
   });
 }
 
@@ -292,7 +332,7 @@ export async function runTool(
         if (!command.trim()) return fail('empty command');
         const timeout = Number.isFinite(Number(args.timeout)) ? Number(args.timeout) : 30;
         const run = await runBash(command, timeout, workspace, signal);
-        return run.failed ? { output: run.text, ok: false } : { output: run.text };
+        return run.failed ? { output: run.text, ok: false, shell: SHELL.name } : { output: run.text, shell: SHELL.name };
       }
       case 'read_file': {
         const abs = safePath(workspace, String(args.path ?? ''), extraReadRoots);

@@ -74,3 +74,25 @@ test('runTool: an edit that changes nothing is not an error', async () => {
   assert.notEqual(res.ok, false);
   assert.match(res.output, /no change/);
 });
+
+// The command line is coloured as the shell that ran it, so the result has to
+// say which that was — including when it failed, which is exactly when the
+// reader wants to know whether the shell or the command was wrong.
+
+test('runTool: bash reports the shell it used, on success and on failure', async () => {
+  const ok = await runTool('bash', { command: 'echo hi' }, ws);
+  assert.equal(ok.shell, process.platform === 'win32' ? 'powershell' : 'bash');
+  const bad = await runTool('bash', { command: 'false' }, ws);
+  assert.equal(bad.shell, ok.shell, 'a failure must not lose the shell');
+});
+
+test('runTool: a command that never ran reports no shell', async () => {
+  const res = await runTool('bash', { command: '   ' }, ws);
+  assert.equal(res.ok, false);
+  assert.equal('shell' in res, false, 'nothing executed, so nothing to name');
+});
+
+test('runTool: only bash reports a shell', async () => {
+  const res = await runTool('list_dir', { path: '.' }, ws);
+  assert.equal('shell' in res, false);
+});

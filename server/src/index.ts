@@ -750,6 +750,7 @@ app.post('/api/sessions/:id/messages', async (req, reply) => {
               args: start?.args,
               ...(ev.ok === false ? { ok: false } : {}),
               ...(ev.diff ? { diff: ev.diff } : {}),
+              ...(ev.shell ? { shell: ev.shell } : {}),
             },
           });
           break;
