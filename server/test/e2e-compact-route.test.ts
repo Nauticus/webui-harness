@@ -130,10 +130,10 @@ const sendTurn = async (sessionId: string, content: string) =>
   events(await post(`/api/sessions/${sessionId}/messages`, { content }));
 
 test.before(async () => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-compact-data-'));
-  workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-compact-ws-'));
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-h-compact-data-'));
+  workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-h-compact-ws-'));
   process.env.PORT = String(APP_PORT);
-  process.env.WEBLISAN_DATA_DIR = dataDir;
+  process.env.WEBUI_H_DATA_DIR = dataDir;
   process.env.AGENT_WORKSPACE_DIR = workspace;
   // Small window, small keep-recent budget: a few turns are enough to have an
   // older half worth summarizing.

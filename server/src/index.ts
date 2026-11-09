@@ -809,7 +809,7 @@ if (fs.existsSync(path.join(clientDist, 'index.html'))) {
 }
 
 // Ensure the history encryption key exists (auto-generated on first run) and
-// fail fast when WEBLISAN_KEY is malformed.
+// fail fast when WEBUI_H_KEY is malformed.
 history.resolveKey();
 
 // One-time migration: legacy in-DB message history -> encrypted per-session files.

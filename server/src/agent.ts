@@ -223,7 +223,7 @@ export async function* runAgentTurn(opts: {
         fileLists: c.fileLists,
       };
     } catch (err) {
-      if (!isAbort(err)) console.warn(`[weblisan] ${label} compaction failed: ${String(err)}`);
+      if (!isAbort(err)) console.warn(`[webui-h] ${label} compaction failed: ${String(err)}`);
     }
   };
 

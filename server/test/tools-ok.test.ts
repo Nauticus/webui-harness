@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-toolok-'));
+const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-h-toolok-'));
 const { runTool } = await import('../src/tools');
 
 // The UI must be able to tell success from failure without reading the prose

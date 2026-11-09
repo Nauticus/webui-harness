@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 
 // Isolate the DB before the module (and its data dir) is initialized.
-process.env.WEBLISAN_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-reasoning-'));
+process.env.WEBUI_H_DATA_DIR = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-h-reasoning-'));
 
 import { effortExtraParams, isReasoningEffort, REASONING_EFFORTS } from '../src/reasoning';
 const db = await import('../src/db');

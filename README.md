@@ -1,4 +1,4 @@
-# Weblisan
+# webui-h
 
 A local AI agent harness: a web app with chat + persistent sessions, backed by a
 real server-side agent loop (LLM with tool calling: shell + file tools sandboxed
@@ -78,9 +78,9 @@ The top level of the UI is the **project**, shown as a tab in the header:
 | `OPENAI_MODEL` | `gpt-4o-mini` | Last-resort model id — used only when a project has no model **and** its provider has no detected models. Prefer leaving it unset |
 | `AGENT_WORKSPACE_DIR` | `./workspace` (relative to server cwd) | Sandbox dir for the agent's shell/file tools |
 | `PORT` | `3001` | API port |
-| `WEBLISAN_DATA_DIR` | `<repo>/data` | Base dir for the DB file, history files and the encryption key |
-| `WEBLISAN_DB` | `<dataDir>/weblisan.db` | Fine-grained override for just the SQLite file |
-| `WEBLISAN_KEY` | auto-generated | 64-hex history encryption key; created on first run (saved to `data/key`, appended to `.env`) |
+| `WEBUI_H_DATA_DIR` | `<repo>/data` | Base dir for the DB file, history files and the encryption key |
+| `WEBUI_H_DB` | `<dataDir>/webui-h.db` | Fine-grained override for just the SQLite file |
+| `WEBUI_H_KEY` | auto-generated | 64-hex history encryption key; created on first run (saved to `data/key`, appended to `.env`) |
 
 After first run, providers (and their keys/URLs) live in the DB and are managed in the UI — the env values are only read once to seed the default provider.
 
@@ -102,11 +102,14 @@ Fastify ──▶ Agent loop (server/src/agent.ts)  [cwd + provider from project
         message.complete / error / done
 ```
 
-SQLite (persistent, data/weblisan.db): providers, projects, session index.
+SQLite (persistent, data/webui-h.db): providers, projects, session index.
+(Installs that predate the rename to webui-h keep their data in `data/weblisan.db`;
+that file is still read when `webui-h.db` is absent. To finish the migration, stop
+the server and rename `weblisan.db`, `weblisan.db-wal` and `weblisan.db-shm`.)
 Session history lives OUTSIDE the DB as append-only JSONL files:
   data/history/<projectId>/<sessionId>.jsonl
 Each message is one line; content and meta are AES-256-GCM encrypted per record
-(key from WEBLISAN_KEY, auto-generated to data/key on first run). Switching
+(key from WEBUI_H_KEY, auto-generated to data/key on first run). Switching
 sessions reloads full history, the LLM sees full context, and nothing is lost
 on restart. Deleting a session/project removes its history files.
 

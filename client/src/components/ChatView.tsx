@@ -156,12 +156,12 @@ export function ChatView({
                   🕸
                 </div>
                 <h1 className="mt-4 text-lg font-semibold text-slate-100">
-                  {activeProject ? 'Weblisan' : 'Create a project to start'}
+                  {activeProject ? 'webui-h' : 'Create a project to start'}
                 </h1>
                 <p className="mt-2 text-sm leading-relaxed text-slate-400">
                   {activeProject
-                    ? 'Send a message below. Weblisan works inside your project folder — it can read, write, and edit files.'
-                    : 'Projects map to folders on disk. Weblisan reads and writes files inside the active project.'}
+                    ? 'Send a message below. webui-h works inside your project folder — it can read, write, and edit files.'
+                    : 'Projects map to folders on disk. webui-h reads and writes files inside the active project.'}
                 </p>
                 {!activeProject && hasActiveSession && (
                   <button

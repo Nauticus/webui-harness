@@ -7,10 +7,10 @@ import path from 'node:path';
 // Isolate HOME before skills.ts is loaded (its global dir derives from HOME),
 // give each test run its own project workspace, and disable the discovery
 // cache so file changes between tests are always visible.
-process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-skills-home-'));
-process.env.WEBLISAN_SKILLS_TTL = '0';
+process.env.HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-h-skills-home-'));
+process.env.WEBUI_H_SKILLS_TTL = '0';
 const HOME = process.env.HOME!;
-const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-skills-ws-'));
+const ws = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-h-skills-ws-'));
 
 // Dynamic import: skills.ts derives its global dir from HOME at load time,
 // so it must load AFTER the env setup above.

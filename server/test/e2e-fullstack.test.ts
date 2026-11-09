@@ -112,7 +112,7 @@ let workspace = '';
 
 /** Build the client, serialized with other e2e files (they run in parallel). */
 async function buildClient(): Promise<void> {
-  const lock = path.join(os.tmpdir(), 'weblisan-client-build-lock');
+  const lock = path.join(os.tmpdir(), 'webui-h-client-build-lock');
   for (;;) {
     try {
       fs.mkdirSync(lock);
@@ -137,11 +137,11 @@ function post(path: string, body: unknown) {
 }
 
 test.before(async () => {
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-e2e-data-'));
-  workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-e2e-ws-'));
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-h-e2e-data-'));
+  workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-h-e2e-ws-'));
   // Set before the import: the server reads these at module load.
   process.env.PORT = String(APP_PORT);
-  process.env.WEBLISAN_DATA_DIR = dataDir;
+  process.env.WEBUI_H_DATA_DIR = dataDir;
   process.env.AGENT_WORKSPACE_DIR = workspace;
   process.env.COMPACT_CONTEXT_WINDOW = '100000';
   process.env.COMPACT_RESERVE_TOKENS = '2000';

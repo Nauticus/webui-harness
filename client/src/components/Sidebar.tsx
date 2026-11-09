@@ -23,7 +23,7 @@ export const Sidebar = memo(function Sidebar({
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-slate-800 bg-slate-900/50">
       <div className="flex items-center justify-between px-4 pb-2 pt-4">
-        <span className="text-sm font-bold tracking-widest text-sky-400">weblisan</span>
+        <span className="text-sm font-bold tracking-widest text-sky-400">webui-h</span>
         <span className="text-[10px] uppercase tracking-wider text-slate-600">local agent</span>
       </div>
       <div className="px-3 pt-1">

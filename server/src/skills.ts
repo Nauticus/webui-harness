@@ -36,13 +36,13 @@ const MAX_DEPTH = 6;
 const SKIP_DIRS = new Set(['node_modules', '.git', 'dist', 'build']);
 
 /**
- * Discovery cache. Pi scans once at startup and on /reload; a Weblisan
+ * Discovery cache. Pi scans once at startup and on /reload; a webui-h
  * server is long-lived with projects added at runtime, so this refreshes
  * per workspace on a short TTL instead — new/edited skills take effect
  * within a minute with no manual reload, and consecutive turns are free.
- * Override with WEBLISAN_SKILLS_TTL (ms; 0 = always rescan, used in tests).
+ * Override with WEBUI_H_SKILLS_TTL (ms; 0 = always rescan, used in tests).
  */
-const TTL_MS = Number(process.env.WEBLISAN_SKILLS_TTL ?? 60_000);
+const TTL_MS = Number(process.env.WEBUI_H_SKILLS_TTL ?? 60_000);
 const cache = new Map<string, { at: number; skills: Skill[] }>();
 
 /** Minimal YAML frontmatter: top-level `key: value` lines between --- markers. */

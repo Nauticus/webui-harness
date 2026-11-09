@@ -70,7 +70,7 @@ export interface SessionRow {
   created_at: string;
 }
 
-// Persistent DB: <dataDir>/weblisan.db (WEBLISAN_DATA_DIR / WEBLISAN_DB to override)
+// Persistent DB: <dataDir>/webui-h.db (WEBUI_H_DATA_DIR / WEBUI_H_DB to override)
 const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 

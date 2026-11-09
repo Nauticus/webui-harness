@@ -110,14 +110,14 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 test.before(async () => {
   await new Promise<void>((resolve) => mock.listen(MOCK_PORT, '127.0.0.1', resolve));
-  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-e2e-effort-data-'));
-  workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'weblisan-e2e-effort-ws-'));
+  dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-h-e2e-effort-data-'));
+  workspace = fs.mkdtempSync(path.join(os.tmpdir(), 'webui-h-e2e-effort-ws-'));
   app = spawn('npx', ['tsx', 'src/index.ts'], {
     cwd: path.resolve(new URL('..', import.meta.url).pathname),
     env: {
       ...process.env,
       PORT: String(APP_PORT),
-      WEBLISAN_DATA_DIR: dataDir,
+      WEBUI_H_DATA_DIR: dataDir,
       COMPACT_CONTEXT_WINDOW: '100000', // compaction disabled; out of scope here
     },
     stdio: ['ignore', 'pipe', 'pipe'],
@@ -126,8 +126,8 @@ test.before(async () => {
     // orphans the node app and keeps the stdio pipes open.
     detached: true,
   });
-  app.stdout?.on('data', (d: Buffer) => process.env.WEBLISAN_E2E_DEBUG && process.stderr.write(`[app] ${d}`));
-  app.stderr?.on('data', (d: Buffer) => process.env.WEBLISAN_E2E_DEBUG && process.stderr.write(`[app!] ${d}`));
+  app.stdout?.on('data', (d: Buffer) => process.env.WEBUI_H_E2E_DEBUG && process.stderr.write(`[app] ${d}`));
+  app.stderr?.on('data', (d: Buffer) => process.env.WEBUI_H_E2E_DEBUG && process.stderr.write(`[app!] ${d}`));
   const deadline = Date.now() + 30_000;
   for (;;) {
     try {
