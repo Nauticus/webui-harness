@@ -161,14 +161,53 @@ any wasm failure render the source uncoloured — never wrong.
   once and the tokens are handed back per line, which is what lets `} else {`
   and a bare `}` come out right. Two parses per diff, bounded by the same 12 KB
   cap; `git diff` in a bash card is detected from the text and gets the same
-  treatment, with the file taken from the diff header.
+  treatment, with the file taken from the diff header. A card shows the first
+  `CARD_LINES` rows and counts the rest — no preview, no folded context, and no
+  scrollbar of its own — and the expand control opens those same rows at reading
+  size in a dialog: the same tokens, nothing re-parsed, so its only extra cost is
+  a second copy of the rows while it is open. Split mode pairs them into columns
+  with one pure pass over the rows (`splitRows`, memoized per diff), and the
+  dialog widens to 1600px so each side keeps a readable measure; the card itself
+  is always inline.
+- **The chat view has the app's only scrollbar.** A card that scrolls is a wheel
+  that never reaches the transcript, and a 240px window onto a 3000-line result
+  is not a readable thing to drag, so tool output, skill instructions, arguments
+  and diffs *truncate* instead (`clipText`, `OutputBlock`): the lines that fit,
+  how many were left out, and the same expand icon the diff uses. The budget is
+  14 lines and 20 KB — the second is the backstop for output with no newlines in
+  it, which would otherwise put every byte in the DOM because line counting
+  found nothing to stop at. Markdown tables wrap rather than scroll, which is why
+  the renderer overrides streamdown's table box instead of inheriting its
+  scroller. The only surfaces that still scroll are the transcript and an open
+  dialog — a dialog with no scrollbar could not show a long result at all, and it
+  is not nested scrolling: nothing inside the chat is moving, the chat is covered.
+  `overscroll-behavior` keeps a finished scroll where it started; at browser zoom
+  the fractional 100% heights leave the document a few pixels scrollable on each
+  axis, which is why the root is `overflow: clip`.
 - **Tool arguments** are rendered from the value itself rather than a
   stringified blob — exact by construction, no parser involved.
 - **Command output** is arbitrary text, so only two things are detected from it:
   a unified diff (hunk header *and* file header, so a log line that merely
   mentions `@@` stays a log line) and a whole-JSON-document. Everything else
   stays plain terminal text on purpose: colouring a build log as if it were
-  source would buy decoration at the cost of trust.
+  source would buy decoration at the cost of trust. The *command* that produced
+  it is a different matter — it is shell, and the dialog shows it above the
+  output with the `$` from the card, parsed with the bash or powershell grammar
+  already in the bundle. Which one comes from the server, not a guess: `shellFor`
+  picks the shell from the platform, the tool description names it to the model,
+  `spawn` runs it, and the result carries its name out through `tool.result` and
+  the stored row so a reopened session colours the same line the same way.
+  History from before that field defaults to bash, which is the only thing that
+  can have run it.
+
+  Both grammars label the program, its flags and its arguments as leaves whose
+  types say nothing — `word` in bash, `command_parameter` under
+  `command_elements` in powershell — so the walker passes a role down: the first
+  child of a `command` is the program, a `-x`-shaped word among its arguments is
+  a flag, and only inside a `command` node, so no other language sees the rule.
+  `2>&1`'s `1` still reads as a number, not a flag. Powershell colours correctly
+  through this; cmd-style `/switches` stay plain, and they should — teaching the
+  rule about `/x` would make `ls /var/log` colour `/var` as a flag.
 
 ## Still open
 

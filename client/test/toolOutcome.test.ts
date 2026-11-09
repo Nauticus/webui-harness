@@ -88,3 +88,38 @@ test('rows without a stored call id still get a usable key', () => {
   ]);
   assert.equal(rowKey(items[0]!, 0), 'tool:7');
 });
+
+// The command line is coloured as the shell that ran it, so the answer has to
+// survive both the live stream and a reopen — and stay absent for history that
+// predates it, where bash is the only thing that could have run.
+
+test('tool.result carries the shell onto the item', () => {
+  let state = applyEvent(initialTurnState(), { type: 'tool.start', id: 'c1', name: 'bash', args: { command: 'ls' } });
+  state = applyEvent(state, { type: 'tool.result', id: 'c1', name: 'bash', result: 'ok', shell: 'powershell' });
+  assert.equal((state.items[0] as Extract<Item, { kind: 'tool' }>).shell, 'powershell');
+});
+
+test('no shell in the event means no shell on the item', () => {
+  let state = applyEvent(initialTurnState(), { type: 'tool.start', id: 'c1', name: 'bash', args: {} });
+  state = applyEvent(state, { type: 'tool.result', id: 'c1', name: 'bash', result: 'ok' });
+  assert.equal('shell' in (state.items[0] as object), false);
+});
+
+test('reopened history restores the shell it ran', () => {
+  const row = (meta: unknown): MessageRow => ({
+    id: 1,
+    session_id: 's',
+    seq: 1,
+    role: 'tool',
+    content: 'ok',
+    meta: JSON.stringify(meta),
+  });
+  const items = rowsToItems([
+    row({ tool_call_id: 'c1', name: 'bash', shell: 'powershell' }),
+    row({ tool_call_id: 'c2', name: 'bash' }),
+    row({ tool_call_id: 'c3', name: 'bash', shell: 'nonsense' }),
+  ]);
+  assert.equal((items[0] as Extract<Item, { kind: 'tool' }>).shell, 'powershell');
+  assert.equal('shell' in (items[1] as object), false, 'older rows stay unset');
+  assert.equal('shell' in (items[2] as object), false, 'an unknown value is not a shell');
+});

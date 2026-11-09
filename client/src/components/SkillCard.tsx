@@ -1,6 +1,7 @@
 import type { Skill } from '../api';
 import { isSkillFile, skillDirName, toolFailed, toolTarget } from '../lib/items';
 import { onToggle, usePanelOpen } from '../lib/panelState';
+import { OutputBlock } from './OutputBlock';
 
 /** Strip leading YAML frontmatter for display (the model parsed it). */
 function bodyWithoutFrontmatter(text: string): string {
@@ -70,17 +71,18 @@ export function SkillCard({
         {result !== undefined && (
           <div className="border-t border-violet-500/20">
             {isError ? (
-              <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-rose-300">
-                {result}
-              </pre>
+              <OutputBlock text={result} title="skill error" className="text-rose-300" />
             ) : (
               <details open={open} onToggle={onToggle(setOpen)}>
                 <summary className="cursor-pointer select-none px-3 py-1.5 text-[11px] font-medium text-violet-400/80 transition-colors hover:text-violet-300">
                   instructions
                 </summary>
-                <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-words border-t border-violet-500/20 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
-                  {bodyWithoutFrontmatter(result)}
-                </pre>
+                <OutputBlock
+                  text={bodyWithoutFrontmatter(result)}
+                  title="skill instructions"
+                  budget={{ lines: 16, chars: 20_000 }}
+                  className="border-t border-violet-500/20 text-slate-300"
+                />
               </details>
             )}
           </div>

@@ -2,6 +2,7 @@ import { Streamdown } from 'streamdown';
 import type { Item } from '../lib/items';
 import { fmtTokens } from '../lib/context';
 import { onToggle, usePanelOpen } from '../lib/panelState';
+import { MD_COMPONENTS } from './markdown';
 
 type CompactionItem = Extract<Item, { kind: 'compaction' }>;
 
@@ -63,8 +64,10 @@ export function CompactionCard({
         <span className="h-px flex-1 bg-slate-800 group-open:bg-slate-700" />
       </summary>
       <div className="mx-2 mb-1 mt-2 overflow-hidden rounded-xl border border-slate-800 bg-slate-900/60">
-        <div className="prose prose-sm prose-invert max-w-none break-words px-4 py-3 !text-slate-300 [&_code]:rounded [&_code]:bg-slate-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-sky-300 [&_pre]:bg-slate-950 [&_pre]:text-slate-300 [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto [&_th]:border [&_th]:border-slate-700 [&_td]:border [&_td]:border-slate-700 [&_tr:nth-child(even)_td]:bg-slate-800/40">
-          <Streamdown mode="static">{item.summary}</Streamdown>
+        <div className="prose prose-sm prose-invert max-w-none break-words px-4 py-3 !text-slate-300 [&_code]:rounded [&_code]:bg-slate-800 [&_code]:px-1 [&_code]:py-0.5 [&_code]:text-sky-300 [&_pre]:bg-slate-950 [&_pre]:text-slate-300 [&_table]:table [&_table]:w-full [&_table]:table-fixed [&_td]:break-words [&_th]:break-words [&_th]:border [&_th]:border-slate-700 [&_td]:border [&_td]:border-slate-700 [&_tr:nth-child(even)_td]:bg-slate-800/40">
+          <Streamdown mode="static" components={MD_COMPONENTS}>
+            {item.summary}
+          </Streamdown>
         </div>
       </div>
     </details>

@@ -30,6 +30,10 @@ export const TOKEN_CLASS = {
   operator: 'text-slate-400',
   property: 'text-sky-300',
   type: 'text-teal-300',
+  /** A shell command's own name — the program being run. */
+  command: 'text-sky-300',
+  /** A shell flag: `-x`, `--flag`. */
+  flag: 'text-amber-300',
   error: 'text-rose-400',
 } as const;
 
@@ -99,19 +103,36 @@ export function segmentsFromTree(root: SyntaxNode, source: string): Segment[] {
   };
 
   let pos = 0;
-  const visit = (n: SyntaxNode) => {
+  const visit = (n: SyntaxNode, role?: ShellRole) => {
     if (n.children.length === 0) {
       if (n.startIndex > pos) push(source.slice(pos, n.startIndex));
-      push(source.slice(n.startIndex, n.endIndex), classify(n));
+      const text = source.slice(n.startIndex, n.endIndex);
+      // Position decides the two shell cases before the type rules: a command's
+      // own name, and a flag sitting among its arguments.
+      const cls =
+        role === 'command' ? 'command' : role === 'argument' && FLAG.test(text) ? 'flag' : classify(n);
+      push(text, cls);
       if (n.endIndex > pos) pos = n.endIndex;
       return;
     }
-    for (const c of n.children) visit(c);
+    // A shell command's program, flags and arguments are all `word` leaves, so
+    // nothing but their place in the tree tells them apart. Everywhere else the
+    // type rules alone decide, and no role is passed down.
+    const shell = n.type === 'command';
+    n.children.forEach((c, i) =>
+      visit(c, role ?? (shell ? (i === 0 ? (c.type.includes('command_name') || c.type === 'word' ? 'command' : undefined) : 'argument') : undefined))
+    );
   };
   visit(root);
   if (pos < source.length) push(source.slice(pos));
   return out;
 }
+
+/** Where a leaf sits in a shell command, for what node types cannot say. */
+type ShellRole = 'command' | 'argument';
+
+/** Flags are `word` leaves too; only their shape gives them away. */
+const FLAG = /^-{1,2}[A-Za-z][\w-]*$/;
 
 /** Segments as plain text — used to assert that colouring loses nothing. */
 export function segmentsText(segments: Segment[]): string {

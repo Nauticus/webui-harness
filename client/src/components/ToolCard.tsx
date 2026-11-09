@@ -1,9 +1,11 @@
 import { toolFailed, toolTarget } from '../lib/items';
 import { onToggle, usePanelOpen } from '../lib/panelState';
-import { HighlightedFile } from './Highlighted';
+import { Highlighted, HighlightedFile } from './Highlighted';
 import { asJson, looksLikeDiff } from '../lib/toolOutput';
 import { DiffView } from './DiffView';
 import { JsonView } from './JsonView';
+import { OutputBlock } from './OutputBlock';
+import { OUTPUT_BUDGET } from '../lib/clip';
 
 function StatusChip({ isError }: { isError: boolean }) {
   return (
@@ -33,6 +35,7 @@ export function ToolCard({
   result,
   ok,
   diff,
+  shell,
   stateKey,
 }: {
   name: string;
@@ -41,10 +44,15 @@ export function ToolCard({
   /** Explicit outcome from the server; older history falls back to the text. */
   ok?: boolean;
   diff?: string;
+  /** The shell that ran it, when the tool knows: colours the command line. */
+  shell?: 'bash' | 'powershell';
   /** Row key: keeps the reader's expand/collapse choice across virtualization. */
   stateKey: string;
 }) {
   const isError = toolFailed({ result, ok });
+  // The server runs commands in one shell and says which; bash is only the
+  // fallback for history written before it started saying.
+  const commandLanguage = shell === 'powershell' ? 'powershell' : 'bash';
   // Open while the result is arriving, but never overrule a manual collapse.
   const [open, setOpen] = usePanelOpen(stateKey, result !== undefined);
   const target = toolTarget(name, args);
@@ -59,15 +67,23 @@ export function ToolCard({
   // Command output that happens to be a diff or a JSON document is a lot more
   // readable rendered as one; anything else stays the raw terminal text.
   const outputJson = result !== undefined && !isError ? asJson(result) : undefined;
+  // A JSON result is shown pretty-printed either way; the coloured view is the
+  // dialog's, since colouring a value that has been cut mid-key is not a thing
+  // that can be done honestly.
+  const outputText = outputJson === undefined ? result : JSON.stringify(outputJson, null, 2);
   const argsBlock =
     args !== undefined ? (
       <details className="border-t border-dashed border-slate-700">
         <summary className="cursor-pointer select-none list-none px-3 py-1.5 text-[11px] text-slate-600 transition-colors hover:text-slate-400">
           arguments
         </summary>
-        <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-slate-500">
-          <JsonView value={args} />
-        </pre>
+        <OutputBlock
+          text={JSON.stringify(args, null, 2)}
+          title="arguments"
+          full={<JsonView value={args} />}
+          budget={{ lines: 10, chars: OUTPUT_BUDGET.chars }}
+          className="text-slate-500"
+        />
       </details>
     ) : null;
 
@@ -102,7 +118,7 @@ export function ToolCard({
           <summary className="flex cursor-pointer select-none list-none items-start gap-2 px-3 py-2 [&::-webkit-details-marker]:hidden">
             <span className="select-none font-mono text-xs font-bold text-emerald-500">$</span>
             <span className="min-w-0 flex-1 break-all font-mono text-xs font-medium leading-relaxed text-slate-100">
-              {target}
+              <Highlighted code={target} language={commandLanguage} />
             </span>
             <span className="ml-auto">{result !== undefined ? <StatusChip isError={isError} /> : <RunningChip />}</span>
           </summary>
@@ -112,9 +128,18 @@ export function ToolCard({
                 <DiffView diff={result} />
               </div>
             ) : (
-              <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words border-t border-slate-700 p-3 font-mono text-[11px] leading-relaxed text-slate-300">
-                {outputJson === undefined ? result : <JsonView value={outputJson} />}
-              </pre>
+              <OutputBlock
+                text={outputText ?? ''}
+                title="command output"
+                heading={
+                  <>
+                    <span className="mr-2 select-none font-bold text-emerald-500">$</span>
+                    <Highlighted code={target} language={commandLanguage} />
+                  </>
+                }
+                full={outputJson === undefined ? undefined : <JsonView value={outputJson} />}
+                className="border-t border-slate-700 text-slate-300"
+              />
             ))}
         </details>
       </div>
@@ -139,10 +164,13 @@ export function ToolCard({
         </summary>
         <div className="border-t border-slate-700">
           {result && (
-            <pre className="max-h-60 overflow-auto whitespace-pre-wrap break-words p-3 font-mono text-[11px] leading-relaxed text-slate-300">
-              {annotation && <span className="text-slate-600">{annotation}</span>}
-              <HighlightedFile text={body ?? ''} path={sourcePath} />
-            </pre>
+            <OutputBlock
+              text={body ?? ''}
+              title={`${name} output`}
+              lead={annotation && <span className="text-slate-600">{annotation}</span>}
+              render={(t) => <HighlightedFile text={t} path={sourcePath} />}
+              className="text-slate-300"
+            />
           )}
           {argsBlock}
         </div>

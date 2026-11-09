@@ -135,3 +135,63 @@ test('segments split into lines without losing text', () => {
 test('an empty block is one empty line', () => {
   assert.deepEqual(segmentsByLine([]), [[]]);
 });
+
+/** A node of a given type, laid out in source order. */
+function n(type: string, children: SyntaxNode[], start = children.length ? children[0]!.startIndex : 0): SyntaxNode {
+  return { type, startIndex: start, endIndex: children[children.length - 1]!.endIndex, isNamed: true, isError: false, children };
+}
+
+test('a shell command names its program, not its arguments', () => {
+  const name = leaf('word', 'git', 0);
+  const sub = leaf('word', 'commit', 4);
+  const flag = leaf('word', '-am', 11);
+  const str = n('string', [leaf('"', '"', 15, false), leaf('string_content', 'fix', 16), leaf('"', '"', 19, false)], 15);
+  const source = 'git commit -am "fix"';
+  const tree = n('command', [n('command_name', [name]), sub, flag, str]);
+  const segments = segmentsFromTree(tree, source);
+  assert.equal(segmentsText(segments), source, 'colouring must not change the text');
+  assert.deepEqual(segments, [
+    { text: 'git', cls: 'command' },
+    { text: ' commit ', cls: undefined },
+    { text: '-am', cls: 'flag' },
+    // the quotes are anonymous tokens with no colour of their own, so they sit
+    // in the plain run either side of the string's content
+    { text: ' "', cls: undefined },
+    { text: 'fix', cls: 'string' },
+    { text: '"', cls: undefined },
+  ]);
+});
+
+test('a flag is only a flag inside a command', () => {
+  const bare = segmentsFromTree(node([leaf('word', '-x', 0)]), '-x');
+  assert.deepEqual(bare, [{ text: '-x', cls: undefined }]);
+});
+
+test('a flag needs a letter, so `-1` and `--` stay plain', () => {
+  for (const t of ['-1', '--', '-', '—-']) {
+    const segs = segmentsFromTree(n('command', [n('command_name', [leaf('word', 'cat', 0)]), leaf('word', t, 4)]), `cat ${t}`);
+    assert.equal(segs.some((s) => s.cls === 'flag'), false, t);
+  }
+});
+
+test('a second command in a pipeline is coloured on its own terms', () => {
+  const a = n('command', [n('command_name', [leaf('word', 'ls', 0)]), leaf('word', '-la', 3)], 0);
+  const pipe = leaf('|', '|', 7, false);
+  const b = n('command', [n('command_name', [leaf('word', 'grep', 9)]), leaf('word', '-c', 14)], 9);
+  const source = 'ls -la | grep -c';
+  const segments = segmentsFromTree(n('list', [a, pipe, b]), source);
+  assert.equal(segmentsText(segments), source);
+  assert.deepEqual(segments.filter((s) => s.cls), [
+    { text: 'ls', cls: 'command' },
+    { text: '-la', cls: 'flag' },
+    { text: '|', cls: 'operator' },
+    { text: 'grep', cls: 'command' },
+    { text: '-c', cls: 'flag' },
+  ]);
+});
+
+test('a non-shell tree is untouched by the shell rules', () => {
+  const { source, leaves } = src('const', ' x', ' ', '=', ' ', 'foo', '(', '1', ')', ';');
+  const before = segmentsFromTree(node(leaves), source);
+  assert.ok(before.every((s) => s.cls !== 'command' && s.cls !== 'flag'));
+});

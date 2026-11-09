@@ -86,6 +86,7 @@ function applyToolResult(state: TurnState, ev: ServerEvent): TurnState {
     result: String(ev.result),
     ...(ev.ok === false ? { ok: false } : {}),
     ...(typeof ev.diff === 'string' ? { diff: ev.diff } : {}),
+    ...(ev.shell === 'powershell' || ev.shell === 'bash' ? { shell: ev.shell } : {}),
   };
   return { ...state, items };
 }

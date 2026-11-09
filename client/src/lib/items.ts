@@ -5,7 +5,17 @@ export type Item =
   | { kind: 'user'; content: string }
   | { kind: 'assistant'; content: string }
   | { kind: 'thinking'; content: string; done: boolean }
-  | { kind: 'tool'; id: string; name: string; args?: unknown; result?: string; ok?: boolean; diff?: string }
+  | {
+      kind: 'tool';
+      id: string;
+      name: string;
+      args?: unknown;
+      result?: string;
+      ok?: boolean;
+      diff?: string;
+      /** Which shell ran it — the command line is coloured as that language. */
+      shell?: 'bash' | 'powershell';
+    }
   | { kind: 'error'; message: string }
   | {
       kind: 'compaction';
@@ -81,6 +91,7 @@ export function rowsToItems(rows: MessageRow[]): Item[] {
       diff?: string;
       stopped?: boolean;
       ok?: boolean;
+      shell?: string;
       tokensBefore?: number;
       tokensAfter?: number;
     } = {};
@@ -117,6 +128,7 @@ export function rowsToItems(rows: MessageRow[]): Item[] {
         result: r.content,
         ...(meta.ok === false ? { ok: false } : {}),
         ...(meta.diff ? { diff: meta.diff } : {}),
+        ...(meta.shell === 'powershell' || meta.shell === 'bash' ? { shell: meta.shell } : {}),
       });
     }
   }

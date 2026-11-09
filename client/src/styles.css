@@ -1,6 +1,14 @@
 @import 'tailwindcss';
 @plugin '@tailwindcss/typography';
 
+/* One mono face for the whole app: `font-mono`, and every <pre>/<code> that
+   preflight styles, all resolve to this. */
+@theme {
+  --font-mono:
+    'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono',
+    'Courier New', monospace;
+}
+
 html,
 body,
 #root {
@@ -11,4 +19,30 @@ body,
 * {
   scrollbar-width: thin;
   scrollbar-color: #334155 transparent;
+}
+
+/*
+ * A scroll stops where it started, and the document itself never scrolls.
+ *
+ * The root gets `clip` because at browser zoom the fractional 100% heights round
+ * up by a few pixels, giving the page a 4-5px scroll on each axis — enough for a
+ * wheel anywhere outside a pane to nudge the whole app. `none` covers the
+ * browser's own overscroll.
+ *
+ * Containment then applies to the panes that can actually scroll. It must not go
+ * further than that: `overflow: hidden` also makes an element a scroll
+ * container, so a blanket rule puts `contain` on every card wrapper in the
+ * transcript and each one swallows the wheel instead of handing it down to the
+ * chat view — hovering a tool card stops the page from scrolling at all.
+ * Scrolling is programmatic elsewhere (the log's scrollToEnd, anchor jumps), and
+ * none of that is affected here.
+ */
+html {
+  overflow: clip;
+  overscroll-behavior: none;
+}
+.overflow-auto,
+.overflow-x-auto,
+.overflow-y-auto {
+  overscroll-behavior: contain;
 }
