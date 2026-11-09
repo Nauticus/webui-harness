@@ -99,6 +99,7 @@ An `@` inside a word (`me@example.com`) is left alone.
 | `OPENAI_BASE_URL` | OpenAI | Base URL for the imported default provider (e.g. `http://localhost:11434/v1` for Ollama) |
 | `OPENAI_MODEL` | `gpt-4o-mini` | Last-resort model id — used only when a project has no model **and** its provider has no detected models. Prefer leaving it unset |
 | `AGENT_WORKSPACE_DIR` | `./workspace` (relative to server cwd) | Sandbox dir for the agent's shell/file tools |
+| `AGENT_SHELL_PATH` | auto-detected | Absolute path to the shell for shell commands. Must exist and be executable — a bad value is a startup error, not a silent fallback |
 | `PORT` | `3001` | API port |
 | `WEBUI_H_DATA_DIR` | `<repo>/data` | Base dir for the DB file, history files and the encryption key |
 | `WEBUI_H_DB` | `<dataDir>/webui-h.db` | Fine-grained override for just the SQLite file |
@@ -141,6 +142,52 @@ Security note: encryption protects the history files at rest (other local
 users, backups, a leaked repo/`data/` copy). It does not hide data from a
 process that can run the server with the key — and the API itself has no
 auth, so keep the port local.
+
+### What the model is told about the machine
+
+A model with no environment facts guesses one, and the guesses are wrong in
+the expensive direction: bash-isms on an `sh` host, `systemctl` in a container
+with no init, `$(cygpath -u …)` on plain Windows. Each wrong guess is a failed
+tool call before the model notices. So the host is detected once at startup and
+stated in the system prompt (`server/src/environment.ts`):
+
+```text
+<environment>
+Host: linux x64, node v26.11.1, kernel 7.3.0-5-cachyos, timezone Europe/Sofia.
+Shell: commands run as `/bin/bash -c "<command>"` — non-interactive, no login
+shell, so startup files (.bashrc, $PROFILE) are not sourced and aliases defined
+in them do not exist here.
+Write Bash syntax.
+Commands run with the working directory as their only writable sandbox. Do not
+guess anything not stated above — check it with one command.
+</environment>
+```
+
+The rules that keep this honest:
+
+- **One resolution, two consumers.** The same frozen `SHELL` object decides the
+  `spawn`, the tool description, and the prompt's dialect line — so the syntax
+  the model writes and the process that runs it cannot disagree.
+- **Dialect, not just a name.** `dialect` is `bash` / `posix` / `powershell`.
+  A host with no bash falls back to `/bin/sh` and the prompt then says *do not
+  use bash-isms*, instead of promising bash and letting every `[[ ]]` fail.
+- **Deterministic.** Resolved at module load, so the token estimate in
+  `contextUsage()` and the prompt the model sees are built from identical text.
+- **No secrets.** No hostname, username, or env values — those are one `env`
+  call away, and do not belong in a prompt sent to a third-party provider.
+- **Verifiable from inside.** Commands get `WEBUI_H_AGENT=1` and
+  `WEBUI_H_WORKSPACE=<path>`, so a command can confirm its sandbox rather than
+  infer it from prose.
+
+Detection details: Unix resolves `AGENT_SHELL_PATH` → `/bin/bash` → `bash` on
+PATH → `/bin/sh`. Windows prefers **PowerShell 7** (`pwsh.exe` on PATH, then
+`%ProgramFiles%\PowerShell\7`) over the Windows PowerShell 5.1 in
+`%SystemRoot%\System32`, because the two are different languages — 7 has `&&`
+and `||` pipeline chaining, 5.1 rejects them — and when 5.1 wins, the prompt
+says so. Both run with `-NoProfile -NonInteractive` (a profile would print into
+the output; an interactive prompt would hang until timeout). WSL is read from
+`WSL_DISTRO_NAME`/`WSLENV` or `/proc/version`; containers from `/.dockerenv`,
+`/proc/1/cgroup`, `KUBERNETES_SERVICE_HOST`; SSH from `SSH_CONNECTION`/`SSH_TTY`.
 
 ## API
 

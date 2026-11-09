@@ -5,6 +5,7 @@ import { TOOLS, runTool, type ShellName } from './tools';
 import { providerClient, type ProviderCreds } from './providers';
 import { effortExtraParams } from './reasoning';
 import { type Skill } from './skills';
+import { environmentBlock } from './environment';
 import {
   compactionThreshold,
   compactMessages,
@@ -82,7 +83,10 @@ const LOOP_GUARD = 200;
 const SYSTEM_PROMPT = (workspace: string, skills: Skill[] = []) => {
   const base =
     `You are a local AI agent. Your working directory is ${workspace}. You can run shell commands and read/write files inside it (and its subdirectories) — that is the only place you may write. To modify an existing file use edit_file (targeted replacement) rather than rewriting the whole file with write_file; write_file is for new files. Use tools to actually do the work; never claim to have done something you did not. Be concise in your final answer.` +
-    ' When the user writes @some/path in a message, it is a reference picked from the working directory: a file (or a directory, ending in "/") relative to it — read it before answering when it is relevant.';
+    ' When the user writes @some/path in a message, it is a reference picked from the working directory: a file (or a directory, ending in "/") relative to it — read it before answering when it is relevant.' +
+    // Same frozen text on every call, so the token estimate in contextUsage()
+    // and the prompt the model actually sees cannot drift apart.
+    `\n\n<environment>\n${environmentBlock()}\n</environment>`;
   const usable = skills.filter((s) => !s.disableModelInvocation);
   if (usable.length === 0) return base;
   const list = usable

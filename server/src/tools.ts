@@ -1,4 +1,5 @@
 import { spawn } from 'node:child_process';
+import { accessSync, constants, statSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
@@ -35,10 +36,60 @@ export interface ToolSpec {
 
 export type ShellName = 'bash' | 'powershell';
 
+/**
+ * Which grammar the model must write. Distinct from `name`: `sh` is not bash,
+ * and telling the model "bash" while spawning `sh` is how `[[ ]]`, arrays and
+ * `shopt` start appearing in commands that then fail with a syntax error.
+ */
+export type ShellDialect = 'bash' | 'posix' | 'powershell';
+
+/** Filesystem probes, injectable so `shellFor` is testable on any host. */
+export interface ShellProbe {
+  isFile(p: string): boolean;
+  isExecutable(p: string): boolean;
+  /** Absolute path of `name` on PATH, or undefined. */
+  which(name: string): string | undefined;
+}
+
+/** PATH lookup that works whatever the host's casing conventions are. */
+function pathValue(): string {
+  const key = Object.keys(process.env).find((k) => k.toUpperCase() === 'PATH');
+  return key ? process.env[key] ?? '' : '';
+}
+
+const defaultProbe: ShellProbe = {
+  isFile(p) {
+    try {
+      return statSync(p).isFile();
+    } catch {
+      return false;
+    }
+  },
+  isExecutable(p) {
+    try {
+      accessSync(p, constants.X_OK);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  which(name) {
+    const win = process.platform === 'win32';
+    const p = win ? path.win32 : path.posix;
+    for (const dir of pathValue().split(p.delimiter)) {
+      if (!dir) continue;
+      const candidate = p.resolve(dir, name);
+      if (defaultProbe.isFile(candidate) && defaultProbe.isExecutable(candidate)) return candidate;
+    }
+    return undefined;
+  },
+};
+
 export interface Shell {
   name: ShellName;
   file: string;
   argv: string[];
+  dialect: ShellDialect;
   /** How the tool description names it to the model. */
   blurb: string;
 }
@@ -56,16 +107,86 @@ export interface Shell {
  * `-NoProfile` keeps a user's profile script from printing into the output and
  * from slowing every call down; `-NonInteractive` makes a prompt a failure
  * rather than a hang until the timeout.
+ *
+ * On Unix the executable is resolved rather than trusted to PATH, because a
+ * slim container with no bash would otherwise fail every single tool call with
+ * an ENOENT the model cannot interpret: `AGENT_SHELL_PATH` (absolute, must
+ * exist — a typo is a startup error, not a silent fallback) then `/bin/bash`,
+ * then `bash` on PATH, then `/bin/sh`, which still runs commands but only in
+ * POSIX syntax.
+ *
+ * On Windows PowerShell 7 is preferred over the Windows PowerShell 5.1 that
+ * ships in System32, and the two are not the same language: 7 has `&&` and `||`
+ * pipeline chaining, 5.1 treats them as errors, so a model that wrote 7 syntax
+ * against 5.1 would fail on the obvious command. The 5.1 path is still the
+ * fallback, because it is the one install guaranteed to exist.
  */
-export function shellFor(platform: NodeJS.Platform = process.platform): Shell {
-  return platform === 'win32'
-    ? {
-        name: 'powershell',
-        file: 'powershell.exe',
-        argv: ['-NoProfile', '-NonInteractive', '-Command'],
-        blurb: 'powershell -Command',
+export function shellFor(
+  platform: NodeJS.Platform = process.platform,
+  probe: ShellProbe = defaultProbe,
+  env: NodeJS.ProcessEnv = process.env
+): Shell {
+  if (platform === 'win32') {
+    const win = path.win32;
+    const override = env.AGENT_SHELL_PATH;
+    if (override !== undefined && override !== '') {
+      if (!win.isAbsolute(override)) {
+        throw new Error(`AGENT_SHELL_PATH must be an absolute path, got: ${override}`);
       }
-    : { name: 'bash', file: 'bash', argv: ['-c'], blurb: 'bash -c' };
+      const ext = win.extname(override).toLowerCase();
+      if ((ext !== '.exe' && ext !== '.com') || !probe.isFile(override)) {
+        throw new Error(`AGENT_SHELL_PATH is not an executable file: ${override}`);
+      }
+      return {
+        name: 'powershell',
+        file: override,
+        argv: ['-NoProfile', '-NonInteractive', '-Command'],
+        dialect: 'powershell',
+        blurb: `${win.basename(override, ext)} -Command`,
+      };
+    }
+
+    const candidates = [
+      probe.which('pwsh.exe'),
+      env.ProgramFiles ? win.join(env.ProgramFiles, 'PowerShell', '7', 'pwsh.exe') : undefined,
+      probe.which('powershell.exe'),
+      env.SystemRoot
+        ? win.join(env.SystemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
+        : undefined,
+    ];
+    const file = candidates.find((c) => c !== undefined && probe.isFile(c)) ?? 'powershell.exe';
+    return {
+      name: 'powershell',
+      file,
+      argv: ['-NoProfile', '-NonInteractive', '-Command'],
+      dialect: 'powershell',
+      blurb: `${win.basename(file, '.exe')} -Command`,
+    };
+  }
+
+  const override = env.AGENT_SHELL_PATH;
+  if (override !== undefined && override !== '') {
+    if (!path.posix.isAbsolute(override)) {
+      throw new Error(`AGENT_SHELL_PATH must be an absolute path, got: ${override}`);
+    }
+    if (!probe.isFile(override) || !probe.isExecutable(override)) {
+      throw new Error(`AGENT_SHELL_PATH is not an executable file: ${override}`);
+    }
+    return {
+      name: 'bash',
+      file: override,
+      argv: ['-c'],
+      dialect: path.posix.basename(override) === 'bash' ? 'bash' : 'posix',
+      blurb: `${path.posix.basename(override)} -c`,
+    };
+  }
+
+  for (const candidate of ['/bin/bash', probe.which('bash')]) {
+    if (candidate && probe.isFile(candidate) && probe.isExecutable(candidate)) {
+      return { name: 'bash', file: candidate, argv: ['-c'], dialect: 'bash', blurb: 'bash -c' };
+    }
+  }
+  return { name: 'bash', file: '/bin/sh', argv: ['-c'], dialect: 'posix', blurb: 'sh -c' };
 }
 
 /** This machine's shell, resolved once at module load. */
@@ -282,7 +403,14 @@ function runBash(
   return new Promise((resolve) => {
     const child = spawn(SHELL.file, [...SHELL.argv, command], {
       cwd: workspace,
-      env: { ...process.env },
+      env: {
+        ...process.env,
+        // Process markers, so anything the command starts (build scripts, a
+        // nested agent) can tell it was launched here rather than from a
+        // terminal — and where the writable sandbox is.
+        WEBUI_H_AGENT: '1',
+        WEBUI_H_WORKSPACE: workspace,
+      },
     });
     let out = '';
     let done = false;
