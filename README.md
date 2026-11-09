@@ -14,6 +14,7 @@ to a workspace directory).
 - **Projects**: each project picks a working directory and provider (server defaults when left blank); sessions live under a project
 - **Per-chat model**: the model is chosen in the composer (a select next to the prompt), per session
 - **Thinking blocks**: reasoning/thinking from models that emit it (OpenAI o-series, OpenRouter, …) is streamed live, shown as a collapsible 💭 card, persisted with the message, and sent back for multi-turn continuity
+- **File references**: type `@` in the prompt and a file picker opens over the project's working directory; the picked path lands in the message as `@relative/path`
 - No auth — intended for local use only
 
 ## Quick start
@@ -68,6 +69,27 @@ The top level of the UI is the **project**, shown as a tab in the header:
 - **Model resolution** when a session's model is *auto*: the project's model (if set via
   the API), then the provider's first detected model, then `OPENAI_MODEL`, then
   `gpt-4o-mini`.
+
+## Referencing files (`@`)
+
+Typing `@` in the composer opens a file picker over the **active project's working
+directory** — the same directory the agent's tools are confined to, so every path you
+can pick is a path the agent can open. The `@ file` chip next to the model picker opens
+the same dialog.
+
+- **Filter** — type to search the whole tree by path, ranked like a code editor's
+  fuzzy open: a basename hit first, then a path hit, then a fuzzy one. `node_modules`,
+  `.git`, `dist` and friends are never listed or matched.
+- **Browse** — with an empty filter it is a directory browser: `↵` goes into a
+  directory, `⌫` walks back out, `↑`/`↓` move, `⇥` takes the highlighted entry.
+- **Pick** — a file inserts `@src/lib/clip.ts`, a directory `@src/lib/` (with the slash,
+  meaning "the files in there"). The caret stays after the reference, so typing continues.
+- **Escape** closes it and leaves the prompt exactly as it was.
+
+What the model receives is the plain text: `@path` is a path relative to the working
+directory, named as such in the system prompt, so the agent reads it with its own tools.
+Nothing is inlined into the message, so a reference costs nothing until it is read.
+An `@` inside a word (`me@example.com`) is left alone.
 
 ## Configuration (env)
 
@@ -138,6 +160,11 @@ auth, so keep the port local.
 - `DELETE /api/sessions/:id`
 - `GET /api/sessions/:id` — session (incl. `model`) + full message history
 - `GET /api/dirs?path=/abs/path` — directory browser data `{ path, parent, dirs[] }`
+- `GET /api/files?projectId=<id>[&q=<query>|&dir=<rel>]` — the `@` picker's data:
+  `{ root, dir, entries: [{ path, type }], truncated }`, paths relative to the project's
+  working directory. With `q` it searches the tree recursively by path; without it `dir`
+  is listed (default: the project root). `node_modules`/`.git`/`dist` are skipped, symlinks
+  are never followed, and a `dir` that escapes the project directory is a `400`.
 - `POST /api/sessions/:id/messages` — `{ content }`, responds with an SSE stream (uses the session's model, else the project's provider + cwd)
 - `POST /api/sessions/:id/compact` — summarize the older messages now, without waiting for a turn to trip the compaction threshold. Responds with an SSE stream (`compaction.start` / `compaction.progress` / `compaction` / `context`) and persists the same compaction record an automatic one would. `409` while a turn is running in the session, `400` when there is nothing older than the keep-recent window to summarize — refused before any model call. Interruptible through `/stop`.
 
@@ -148,11 +175,13 @@ server/
   src/index.ts   Fastify app, routes, SSE, static serving
   src/agent.ts   Agent loop (tool-calling, streaming, step budget)
   src/tools.ts   Sandboxed tools (bash, read_file, write_file, list_dir)
+  src/files.ts   Workspace file lookup for the @ picker (listing + fuzzy search)
   src/db.ts      SQLite (in-memory) schema + CRUD
   workspace/     Agent sandbox (created at startup, gitignored)
 client/
   src/App.tsx    Chat UI: session sidebar, streaming messages, tool cards
   src/api.ts     API client + SSE reader
+  src/lib/mention.ts  The @ token in a prompt: where it starts, what it becomes
   src/styles.css
 ```
 

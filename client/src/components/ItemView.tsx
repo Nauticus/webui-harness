@@ -2,11 +2,37 @@ import { memo } from 'react';
 import { Streamdown } from 'streamdown';
 import type { Skill } from '../api';
 import { type Item, isSkillFile, parseSkillInvocation, toolTarget } from '../lib/items';
+import { splitMentions } from '../lib/mention';
 import { ThinkingCard } from './ThinkingCard';
 import { MD_COMPONENTS } from './markdown';
 import { ToolCard } from './ToolCard';
 import { CompactionCard } from './CompactionCard';
 import { SkillCard, matchSkill } from './SkillCard';
+
+/** The prompt with its `@path` references picked out, so a message that points
+ *  at files reads as pointing at files. The path stays readable as a path —
+ *  what the model receives is the same text, only the emphasis differs. */
+function PromptText({ text }: { text: string }) {
+  const parts = splitMentions(text);
+  if (parts.every((p) => !p.mention)) return <>{text}</>;
+  return (
+    <>
+      {parts.map((p, i) =>
+        p.mention ? (
+          <span
+            key={i}
+            title="A file in the project working directory"
+            className="rounded bg-emerald-500/15 px-1 font-mono text-[0.85em] text-emerald-300"
+          >
+            {p.text}
+          </span>
+        ) : (
+          <span key={i}>{p.text}</span>
+        )
+      )}
+    </>
+  );
+}
 
 /** Memoized: a streaming turn only ever changes the last item, and every
  *  other item keeps its identity through the reducer — so per delta exactly
@@ -44,7 +70,7 @@ export const ItemView = memo(function ItemView({
                 {invocation.task ? <span className="block">{invocation.task}</span> : null}
               </>
             ) : (
-              item.content
+              <PromptText text={item.content} />
             )}
           </div>
         </div>

@@ -324,6 +324,7 @@ export default function App() {
           input={chat.input}
           busy={chat.busy}
           disabled={!activeProject}
+          projectId={projectId ?? ''}
           placeholder={activeProject ? 'Ask the agent to do something…' : 'Create a project first…'}
           onModelChange={onModelChange}
           onEffortChange={onEffortChange}

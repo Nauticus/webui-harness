@@ -105,6 +105,22 @@ export interface DirsResponse {
   dirs: string[];
 }
 
+/** One entry of a project's working directory, addressed relative to it. */
+export interface FileEntry {
+  path: string;
+  type: 'file' | 'dir';
+}
+
+export interface FilesResponse {
+  /** Absolute root the entries are relative to (for display only). */
+  root: string;
+  /** The directory listed; '' when the response is a recursive search. */
+  dir: string;
+  entries: FileEntry[];
+  /** There were more matches than the list shows. */
+  truncated: boolean;
+}
+
 async function json<T>(res: Response): Promise<T> {
   if (!res.ok) {
     const body = (await res.json().catch(() => ({}))) as { error?: string };
@@ -191,6 +207,18 @@ export const api = {
     ),
   listDirs: (p?: string) =>
     fetch(`/api/dirs${p ? `?path=${encodeURIComponent(p)}` : ''}`).then((r) => json<DirsResponse>(r)),
+  /**
+   * Files inside a project's working directory — the `@` picker's data.
+   * A `q` searches the whole tree by path; without it, `dir` is listed.
+   */
+  listFiles: (opts: { projectId?: string; q?: string; dir?: string }) => {
+    const ps = new URLSearchParams();
+    if (opts.projectId) ps.set('projectId', opts.projectId);
+    if (opts.q) ps.set('q', opts.q);
+    if (opts.dir) ps.set('dir', opts.dir);
+    const qs = ps.toString();
+    return fetch(`/api/files${qs ? `?${qs}` : ''}`).then((r) => json<FilesResponse>(r));
+  },
 };
 
 /**

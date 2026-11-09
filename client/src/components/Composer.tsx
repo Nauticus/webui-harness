@@ -1,7 +1,9 @@
-import { memo, useEffect, useRef, useState, type KeyboardEvent } from 'react';
+import { memo, useEffect, useRef, useState, type ChangeEvent, type KeyboardEvent } from 'react';
 import { Select } from '@base-ui-components/react/select';
 import type { ContextUsage, ModelGroup, Skill } from '../api';
 import { contextUsage, fmtTokens } from '../lib/context';
+import { findMention, insertMention, justOpenedMention } from '../lib/mention';
+import { FilePicker } from './dialogs/FilePicker';
 
 /**
  * Composer: full-width prompt input with a compact model-picker chip and a
@@ -29,6 +31,7 @@ export const Composer = memo(function Composer({
   busy,
   disabled,
   placeholder,
+  projectId,
   onModelChange,
   onEffortChange,
   onInput,
@@ -51,6 +54,8 @@ export const Composer = memo(function Composer({
   busy: boolean;
   disabled: boolean;
   placeholder: string;
+  /** Which project's working directory the `@` picker browses. */
+  projectId: string;
   onModelChange: (v: string) => void;
   onEffortChange: (v: string) => void;
   onInput: (v: string) => void;
@@ -76,6 +81,52 @@ export const Composer = memo(function Composer({
   /** Escape closes the menu without touching the text; it reopens as soon as
    *  the query changes. */
   const [acDismissed, setAcDismissed] = useState(false);
+
+  // @file picker — the range in `input` the picked path replaces, frozen when
+  // the dialog opens. The dialog holds focus while it is up, so the caret
+  // cannot be read at pick time; and the text cannot have moved either, which
+  // is what makes the stored range safe.
+  const [picker, setPicker] = useState<{ start: number; end: number; query: string } | null>(null);
+  const pendingCaret = useRef<number | null>(null);
+
+  // Put the caret back where the inserted reference ends, so typing continues
+  // after it instead of at the start of the message.
+  useEffect(() => {
+    const c = pendingCaret.current;
+    if (c === null) return;
+    pendingCaret.current = null;
+    const el = taRef.current;
+    if (!el) return;
+    el.focus();
+    el.setSelectionRange(c, c);
+  }, [input]);
+
+  const handleChange = (e: ChangeEvent<HTMLTextAreaElement>) => {
+    const value = e.target.value;
+    const caret = e.target.selectionStart ?? value.length;
+    onInput(value);
+    // The picker opens on the keystroke that types the `@`, so the dialog owns
+    // the rest of the path from there — one place typing, never two.
+    if (!disabled && justOpenedMention(value, caret)) {
+      setPicker({ start: caret - 1, end: caret, query: '' });
+    }
+  };
+
+  /** Open the picker for the reference under the caret, or at the caret. */
+  const openPicker = () => {
+    if (disabled || picker) return;
+    const el = taRef.current;
+    const caret = el?.selectionStart ?? input.length;
+    setPicker(findMention(input, caret) ?? { start: caret, end: caret, query: '' });
+  };
+
+  const pickFile = (path: string) => {
+    if (!picker) return;
+    const next = insertMention(input, picker, path);
+    pendingCaret.current = next.caret;
+    onInput(next.text);
+    setPicker(null);
+  };
 
   // /skill: autocomplete — a single leading "/token" (no spaces yet).
   // The server expands /skill:name [task] into the skill's instructions.
@@ -180,7 +231,7 @@ export const Composer = memo(function Composer({
           <textarea
             ref={taRef}
             value={input}
-            onChange={(e) => onInput(e.target.value)}
+            onChange={handleChange}
             onKeyDown={handleKeyDown}
             placeholder={placeholder}
             rows={2}
@@ -368,6 +419,18 @@ export const Composer = memo(function Composer({
                 <span aria-hidden>⧉</span> compact
               </button>
             )}
+            {/* Same dialog the `@` keystroke opens, for people who would rather
+                see the files than remember the shortcut. */}
+            <button
+              type="button"
+              onClick={openPicker}
+              disabled={disabled}
+              aria-label="Pick a file for the prompt"
+              title="Reference a file from the project — @ in the prompt does the same"
+              className="flex items-center gap-1 rounded-full border border-slate-700/80 bg-slate-900 px-2.5 py-1 text-[11px] text-slate-400 transition-colors hover:border-emerald-500/50 hover:text-slate-200 disabled:opacity-50"
+            >
+              <span aria-hidden>@</span> file
+            </button>
           </div>
           <div className="flex items-center gap-3">
             <p className="text-[11px] text-slate-600">
@@ -375,10 +438,21 @@ export const Composer = memo(function Composer({
                 ? 'Agent is working — Enter adds a newline'
                 : 'Enter to send · Shift+Enter for newline'}
               {(skills ?? []).length > 0 ? ' · / for skills' : ''}
+              {!disabled ? ' · @ for files' : ''}
             </p>
           </div>
         </div>
       </div>
+
+      {picker && (
+        <FilePicker
+          open
+          projectId={projectId}
+          initialQuery={picker.query}
+          onPick={pickFile}
+          onClose={() => setPicker(null)}
+        />
+      )}
     </footer>
   );
 });

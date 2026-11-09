@@ -25,6 +25,7 @@ import {
 import { detectModels, groupModels } from './providers';
 import { isReasoningEffort, type ReasoningEffort } from './reasoning';
 import { listSkills, expandSkillInvocation } from './skills';
+import { listWorkspace, searchWorkspace } from './files';
 import { DEFAULT_WORKSPACE } from './tools';
 
 const PORT = Number(process.env.PORT ?? 3001);
@@ -360,6 +361,30 @@ app.get('/api/dirs', async (req, reply) => {
     reply.send({ path: resolved, parent: path.dirname(resolved), dirs });
   } catch {
     reply.code(400).send({ error: `cannot read directory: ${resolved}` });
+  }
+});
+
+/**
+ * Workspace file lookup for the composer's `@` picker.
+ *
+ * Addressed relative to the project's working directory — the same sandbox the
+ * agent's tools live in — so the client sends no absolute path and cannot ask
+ * for anything outside it. With `q` it searches recursively by path; without it
+ * it lists `dir` (default: the project root).
+ */
+app.get('/api/files', async (req, reply) => {
+  const { projectId, q, dir } = req.query as { projectId?: string; q?: string; dir?: string };
+  const project = projectId ? db.getProject(projectId) : null;
+  if (projectId && !project) return reply.code(404).send({ error: 'project not found' });
+  const root = project?.cwd || DEFAULT_WORKSPACE;
+  try {
+    const result = q?.trim()
+      ? await searchWorkspace(root, q.trim())
+      : await listWorkspace(root, dir?.trim() ?? '');
+    reply.send({ root, ...result });
+  } catch (err) {
+    const e = err as { statusCode?: number; message?: string };
+    reply.code(e.statusCode ?? 400).send({ error: e.message ?? 'cannot list files' });
   }
 });
 
